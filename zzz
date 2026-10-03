@@ -1,0 +1,1560 @@
+local Players=game:GetService("Players")
+local UIS=game:GetService("UserInputService")
+local RS=game:GetService("RunService")
+local HttpService=game:GetService("HttpService")
+
+local LP=Players.LocalPlayer
+local Camera=workspace.CurrentCamera
+
+local CONFIG={
+    Camlock={
+        Enabled=false,
+        Keybind="C",
+        Smoothing=.15,
+        AimPart="Head",
+        FOV=150,
+        FOVCheck=true,
+        FOVBased=false
+    },
+    Checks={
+        WallCheck=false,
+        KOCheck=true,
+        VisibleCheck=false,
+        TeamCheck=true
+    },
+    Whitelist={
+        Enabled=false,
+        Keybind="P",
+        Users={}
+    },
+    Visuals={
+        HighlightAll=false,
+        TeamCheck=true
+    },
+    GUI={
+        HideKeybind="RightShift"
+    },
+    Config={
+        Name="",
+        Autoload=false
+    }
+}
+
+local COLORS={
+    BG=Color3.fromRGB(12,12,14),
+    Panel=Color3.fromRGB(20,20,23),
+    Input=Color3.fromRGB(28,28,32),
+    Button=Color3.fromRGB(45,45,50),
+    On=Color3.fromRGB(70,70,78),
+    Border=Color3.fromRGB(55,55,60),
+    Text=Color3.fromRGB(235,235,238),
+    Muted=Color3.fromRGB(150,150,155),
+    Enemy=Color3.fromRGB(255,70,70),
+    White=Color3.fromRGB(70,255,110)
+}
+
+local AIM_PARTS={"Head","Torso","UpperTorso","LowerTorso","Root"}
+
+local connections={}
+local target=nil
+local currentTab="Combat"
+local guiHidden=false
+local waitingCam=false
+local waitingHide=false
+local waitingWhitelist=false
+local selectedConfig=""
+
+local Highlights={}
+local playerConnections={}
+
+local function connect(signal,fn)
+    local c=signal:Connect(fn)
+    table.insert(connections,c)
+    return c
+end
+
+local function disconnectAll()
+    for _,c in ipairs(connections) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+
+    table.clear(connections)
+
+    for plr,list in pairs(playerConnections) do
+        for _,c in ipairs(list) do
+            pcall(function()
+                c:Disconnect()
+            end)
+        end
+    end
+
+    table.clear(playerConnections)
+end
+
+local function clone(t)
+    if type(t)~="table" then
+        return t
+    end
+
+    local n={}
+
+    for k,v in pairs(t) do
+        n[k]=clone(v)
+    end
+
+    return n
+end
+
+local function merge(a,b)
+    for k,v in pairs(a) do
+        if type(v)=="table" and type(b[k])=="table" then
+            merge(v,b[k])
+        else
+            b[k]=v
+        end
+    end
+end
+
+local function filesAvailable()
+    return type(writefile)=="function"
+        and type(readfile)=="function"
+        and type(isfile)=="function"
+        and type(makefolder)=="function"
+        and type(isfolder)=="function"
+        and type(listfiles)=="function"
+        and type(delfile)=="function"
+end
+
+local folder="ZZZConfigs"
+
+local function ensureFolder()
+    if not filesAvailable() then
+        return false
+    end
+
+    if not isfolder(folder) then
+        pcall(function()
+            makefolder(folder)
+        end)
+    end
+
+    return isfolder(folder)
+end
+
+local function configPath(name)
+    return folder.."/"..name..".json"
+end
+
+local function getConfigs()
+    local result={}
+
+    if not ensureFolder() then
+        return result
+    end
+
+    local ok,files=pcall(listfiles,folder)
+
+    if not ok or type(files)~="table" then
+        return result
+    end
+
+    for _,path in ipairs(files) do
+        local name=path:match("[^/\\]+$")
+
+        if name then
+            name=name:gsub("%.json$","")
+
+            if name~="" then
+                table.insert(result,name)
+            end
+        end
+    end
+
+    table.sort(result)
+
+    return result
+end
+
+local function saveConfig(name)
+    if not filesAvailable() then
+        return false
+    end
+
+    name=tostring(name or ""):gsub("[^%w_%-%s]","")
+
+    if name=="" then
+        return false
+    end
+
+    ensureFolder()
+
+    local data=clone(CONFIG)
+    data.Config.Name=name
+
+    local ok,result=pcall(function()
+        return HttpService:JSONEncode(data)
+    end)
+
+    if not ok then
+        return false
+    end
+
+    local success=pcall(function()
+        writefile(configPath(name),result)
+    end)
+
+    if success then
+        selectedConfig=name
+        CONFIG.Config.Name=name
+    end
+
+    return success
+end
+
+local function loadConfig(name)
+    if not filesAvailable() or not name or name=="" then
+        return false
+    end
+
+    local path=configPath(name)
+
+    if not isfile(path) then
+        return false
+    end
+
+    local ok,data=pcall(function()
+        return HttpService:JSONDecode(readfile(path))
+    end)
+
+    if not ok or type(data)~="table" then
+        return false
+    end
+
+    local defaults={
+        Camlock={
+            Enabled=false,
+            Keybind="C",
+            Smoothing=.15,
+            AimPart="Head",
+            FOV=150,
+            FOVCheck=true,
+            FOVBased=false
+        },
+        Checks={
+            WallCheck=false,
+            KOCheck=true,
+            VisibleCheck=false,
+            TeamCheck=true
+        },
+        Whitelist={
+            Enabled=false,
+            Keybind="P",
+            Users={}
+        },
+        Visuals={
+            HighlightAll=false,
+            TeamCheck=true
+        },
+        GUI={
+            HideKeybind="RightShift"
+        },
+        Config={
+            Name=name,
+            Autoload=false
+        }
+    }
+
+    merge(data,defaults)
+
+    CONFIG=defaults
+    CONFIG.Config.Name=name
+    selectedConfig=name
+    target=nil
+
+    return true
+end
+
+local function deleteConfig(name)
+    if not filesAvailable() or not name or name=="" then
+        return false
+    end
+
+    local path=configPath(name)
+
+    if not isfile(path) then
+        return false
+    end
+
+    local ok=pcall(function()
+        delfile(path)
+    end)
+
+    if ok and selectedConfig==name then
+        selectedConfig=""
+    end
+
+    return ok
+end
+
+local function unloadConfig()
+    target=nil
+    CONFIG.Camlock.Enabled=false
+    CONFIG.Config.Name=""
+    CONFIG.Config.Autoload=false
+    selectedConfig=""
+end
+
+local function alive(character)
+    if not character then
+        return false
+    end
+
+    local hum=character:FindFirstChildOfClass("Humanoid")
+
+    if not hum then
+        return false
+    end
+
+    return hum.Health>0 and hum:GetState()~=Enum.HumanoidStateType.Dead
+end
+
+local function ko(character)
+    if not character then
+        return true
+    end
+
+    local hum=character:FindFirstChildOfClass("Humanoid")
+
+    if not hum or hum.Health<=0 or hum:GetState()==Enum.HumanoidStateType.Dead then
+        return true
+    end
+
+    for _,name in ipairs({"KO","K.O","Knocked","Downed"}) do
+        local value=character:FindFirstChild(name)
+
+        if value and value:IsA("BoolValue") and value.Value then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function aimPart(character)
+    if not character then
+        return nil
+    end
+
+    local requested=CONFIG.Camlock.AimPart
+
+    local names={
+        Head={"Head"},
+        Torso={"Torso","UpperTorso","HumanoidRootPart"},
+        UpperTorso={"UpperTorso","Torso","HumanoidRootPart"},
+        LowerTorso={"LowerTorso","HumanoidRootPart","Torso"},
+        Root={"HumanoidRootPart","Torso","UpperTorso"}
+    }
+
+    for _,name in ipairs(names[requested] or names.Head) do
+        local part=character:FindFirstChild(name)
+
+        if part and part:IsA("BasePart") then
+            return part
+        end
+    end
+
+    return character:FindFirstChild("HumanoidRootPart")
+end
+
+local function isWhitelisted(plr)
+    return plr and CONFIG.Whitelist.Users[tostring(plr.UserId)]==true
+end
+
+local function isEnemy(plr)
+    if not plr or plr==LP then
+        return false
+    end
+
+    if CONFIG.Whitelist.Enabled and not isWhitelisted(plr) then
+        return false
+    end
+
+    if CONFIG.Checks.TeamCheck and LP.Team and plr.Team==LP.Team then
+        return false
+    end
+
+    return true
+end
+
+local function visible(part,character)
+    if not part or not character then
+        return false
+    end
+
+    local origin=Camera.CFrame.Position
+    local direction=part.Position-origin
+
+    local params=RaycastParams.new()
+    params.FilterType=Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances={LP.Character,character}
+    params.IgnoreWater=true
+
+    return workspace:Raycast(origin,direction,params)==nil
+end
+
+local function mousePosition()
+    return UIS:GetMouseLocation()
+end
+
+local function closest()
+    local mouse=mousePosition()
+    local best=nil
+    local bestDistance=math.huge
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if isEnemy(plr) then
+            local character=plr.Character
+
+            if character and alive(character) and (not CONFIG.Checks.KOCheck or not ko(character)) then
+                local part=aimPart(character)
+
+                if part then
+                    local pos,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+                    if onScreen and pos.Z>0 then
+                        local distance=(Vector2.new(pos.X,pos.Y)-mouse).Magnitude
+
+                        if (not CONFIG.Camlock.FOVCheck or distance<=CONFIG.Camlock.FOV) and distance<bestDistance then
+                            local allowed=true
+
+                            if CONFIG.Checks.WallCheck or CONFIG.Checks.VisibleCheck then
+                                allowed=visible(part,character)
+                            end
+
+                            if allowed then
+                                best=plr
+                                bestDistance=distance
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+local function playerUnderCursor()
+    local mouse=mousePosition()
+    local closestPlayer=nil
+    local closestDistance=35
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LP then
+            local character=plr.Character
+            local part=character and aimPart(character)
+
+            if part then
+                local pos,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+                if onScreen and pos.Z>0 then
+                    local distance=(Vector2.new(pos.X,pos.Y)-mouse).Magnitude
+
+                    if distance<closestDistance then
+                        closestPlayer=plr
+                        closestDistance=distance
+                    end
+                end
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+local FOVGui=Instance.new("ScreenGui")
+FOVGui.Name="ZZZFOV"
+FOVGui.ResetOnSpawn=false
+FOVGui.IgnoreGuiInset=true
+FOVGui.Parent=LP:WaitForChild("PlayerGui")
+
+local FOVFrame=Instance.new("Frame")
+FOVFrame.BackgroundTransparency=1
+FOVFrame.AnchorPoint=Vector2.new(.5,.5)
+FOVFrame.Size=UDim2.fromOffset(CONFIG.Camlock.FOV*2,CONFIG.Camlock.FOV*2)
+FOVFrame.Parent=FOVGui
+
+local FOVCorner=Instance.new("UICorner")
+FOVCorner.CornerRadius=UDim.new(1,0)
+FOVCorner.Parent=FOVFrame
+
+local FOVStroke=Instance.new("UIStroke")
+FOVStroke.Thickness=1
+FOVStroke.Color=COLORS.Border
+FOVStroke.Transparency=.15
+FOVStroke.Parent=FOVFrame
+
+local function updateFOV()
+    local mouse=mousePosition()
+
+    FOVFrame.Position=UDim2.fromOffset(mouse.X,mouse.Y)
+    FOVFrame.Size=UDim2.fromOffset(CONFIG.Camlock.FOV*2,CONFIG.Camlock.FOV*2)
+    FOVFrame.Visible=CONFIG.Camlock.FOVCheck and not guiHidden
+end
+
+local GUI=Instance.new("ScreenGui")
+GUI.Name="ZZZMainGUI"
+GUI.ResetOnSpawn=false
+GUI.IgnoreGuiInset=true
+GUI.Parent=LP:WaitForChild("PlayerGui")
+
+local Main=Instance.new("Frame")
+Main.Size=UDim2.fromOffset(590,550)
+Main.Position=UDim2.new(.5,-295,.5,-275)
+Main.BackgroundColor3=COLORS.BG
+Main.BorderSizePixel=0
+Main.Parent=GUI
+
+local MainCorner=Instance.new("UICorner")
+MainCorner.CornerRadius=UDim.new(0,10)
+MainCorner.Parent=Main
+
+local MainStroke=Instance.new("UIStroke")
+MainStroke.Color=COLORS.Border
+MainStroke.Thickness=1
+MainStroke.Parent=Main
+
+local Top=Instance.new("Frame")
+Top.Size=UDim2.new(1,0,0,45)
+Top.BackgroundColor3=COLORS.Panel
+Top.BorderSizePixel=0
+Top.Parent=Main
+
+local TopCorner=Instance.new("UICorner")
+TopCorner.CornerRadius=UDim.new(0,10)
+TopCorner.Parent=Top
+
+local Title=Instance.new("TextLabel")
+Title.BackgroundTransparency=1
+Title.Position=UDim2.fromOffset(15,0)
+Title.Size=UDim2.new(1,-110,1,0)
+Title.Font=Enum.Font.GothamBold
+Title.Text="ZZZ"
+Title.TextColor3=COLORS.Text
+Title.TextSize=16
+Title.TextXAlignment=Enum.TextXAlignment.Left
+Title.Parent=Top
+
+local Minimize=Instance.new("TextButton")
+Minimize.Size=UDim2.fromOffset(35,30)
+Minimize.Position=UDim2.new(1,-75,0,8)
+Minimize.BackgroundColor3=COLORS.Button
+Minimize.BorderSizePixel=0
+Minimize.Font=Enum.Font.GothamBold
+Minimize.Text="-"
+Minimize.TextColor3=COLORS.Text
+Minimize.TextSize=16
+Minimize.Parent=Top
+
+local MinCorner=Instance.new("UICorner")
+MinCorner.CornerRadius=UDim.new(0,6)
+MinCorner.Parent=Minimize
+
+local Close=Instance.new("TextButton")
+Close.Size=UDim2.fromOffset(35,30)
+Close.Position=UDim2.new(1,-38,0,8)
+Close.BackgroundColor3=COLORS.Button
+Close.BorderSizePixel=0
+Close.Font=Enum.Font.GothamBold
+Close.Text="×"
+Close.TextColor3=COLORS.Text
+Close.TextSize=16
+Close.Parent=Top
+
+local CloseCorner=Instance.new("UICorner")
+CloseCorner.CornerRadius=UDim.new(0,6)
+CloseCorner.Parent=Close
+
+local Tabs=Instance.new("Frame")
+Tabs.Position=UDim2.fromOffset(10,55)
+Tabs.Size=UDim2.new(1,-20,0,38)
+Tabs.BackgroundTransparency=1
+Tabs.Parent=Main
+
+local TabLayout=Instance.new("UIListLayout")
+TabLayout.FillDirection=Enum.FillDirection.Horizontal
+TabLayout.Padding=UDim.new(0,5)
+TabLayout.Parent=Tabs
+
+local Content=Instance.new("ScrollingFrame")
+Content.Position=UDim2.fromOffset(10,103)
+Content.Size=UDim2.new(1,-20,1,-113)
+Content.BackgroundColor3=COLORS.Panel
+Content.BorderSizePixel=0
+Content.ScrollBarThickness=4
+Content.ScrollBarImageColor3=COLORS.Button
+Content.AutomaticCanvasSize=Enum.AutomaticSize.Y
+Content.Parent=Main
+
+local ContentCorner=Instance.new("UICorner")
+ContentCorner.CornerRadius=UDim.new(0,8)
+ContentCorner.Parent=Content
+
+local Padding=Instance.new("UIPadding")
+Padding.PaddingTop=UDim.new(0,10)
+Padding.PaddingBottom=UDim.new(0,10)
+Padding.PaddingLeft=UDim.new(0,10)
+Padding.PaddingRight=UDim.new(0,10)
+Padding.Parent=Content
+
+local ContentLayout=Instance.new("UIListLayout")
+ContentLayout.Padding=UDim.new(0,8)
+ContentLayout.Parent=Content
+
+local function clearContent()
+    for _,child in ipairs(Content:GetChildren()) do
+        if not child:IsA("UIListLayout") and not child:IsA("UIPadding") then
+            child:Destroy()
+        end
+    end
+end
+
+local function section(text)
+    local label=Instance.new("TextLabel")
+    label.Size=UDim2.new(1,0,0,28)
+    label.BackgroundTransparency=1
+    label.Font=Enum.Font.GothamBold
+    label.Text=text
+    label.TextColor3=COLORS.Text
+    label.TextSize=14
+    label.TextXAlignment=Enum.TextXAlignment.Left
+    label.Parent=Content
+end
+
+local function button(text,callback)
+    local b=Instance.new("TextButton")
+    b.Size=UDim2.new(1,0,0,35)
+    b.BackgroundColor3=COLORS.Button
+    b.BorderSizePixel=0
+    b.Font=Enum.Font.Gotham
+    b.Text=text
+    b.TextColor3=COLORS.Text
+    b.TextSize=13
+    b.AutoButtonColor=false
+    b.Parent=Content
+
+    local c=Instance.new("UICorner")
+    c.CornerRadius=UDim.new(0,6)
+    c.Parent=b
+
+    connect(b.MouseButton1Click,function()
+        callback(b)
+    end)
+
+    return b
+end
+
+local function textbox(placeholder,value,callback)
+    local box=Instance.new("TextBox")
+    box.Size=UDim2.new(1,0,0,35)
+    box.BackgroundColor3=COLORS.Input
+    box.BorderSizePixel=0
+    box.Font=Enum.Font.Gotham
+    box.PlaceholderText=placeholder
+    box.Text=tostring(value or "")
+    box.TextColor3=COLORS.Text
+    box.PlaceholderColor3=COLORS.Muted
+    box.TextSize=13
+    box.ClearTextOnFocus=false
+    box.Parent=Content
+
+    local c=Instance.new("UICorner")
+    c.CornerRadius=UDim.new(0,6)
+    c.Parent=box
+
+    connect(box.FocusLost,function()
+        callback(box.Text)
+    end)
+
+    return box
+end
+
+local function dropdown(name,current,options,callback)
+    local holder=Instance.new("Frame")
+    holder.Size=UDim2.new(1,0,0,35)
+    holder.BackgroundTransparency=1
+    holder.Parent=Content
+
+    local mainButton=Instance.new("TextButton")
+    mainButton.Size=UDim2.new(1,0,0,35)
+    mainButton.BackgroundColor3=COLORS.Input
+    mainButton.BorderSizePixel=0
+    mainButton.Font=Enum.Font.Gotham
+    mainButton.Text=name..": "..current
+    mainButton.TextColor3=COLORS.Text
+    mainButton.TextSize=13
+    mainButton.TextXAlignment=Enum.TextXAlignment.Left
+    mainButton.AutoButtonColor=false
+    mainButton.Parent=holder
+
+    local padding=Instance.new("UIPadding")
+    padding.PaddingLeft=UDim.new(0,10)
+    padding.Parent=mainButton
+
+    local corner=Instance.new("UICorner")
+    corner.CornerRadius=UDim.new(0,6)
+    corner.Parent=mainButton
+
+    local opened=false
+    local menu=nil
+
+    local function closeMenu()
+        if menu then
+            menu:Destroy()
+            menu=nil
+        end
+
+        opened=false
+        holder.Size=UDim2.new(1,0,0,35)
+    end
+
+    connect(mainButton.MouseButton1Click,function()
+        if opened then
+            closeMenu()
+            return
+        end
+
+        opened=true
+        holder.Size=UDim2.new(1,0,0,35+(#options*32))
+
+        menu=Instance.new("Frame")
+        menu.Size=UDim2.new(1,0,0,#options*32)
+        menu.Position=UDim2.fromOffset(0,35)
+        menu.BackgroundColor3=COLORS.Input
+        menu.BorderSizePixel=0
+        menu.ZIndex=20
+        menu.Parent=holder
+
+        local layout=Instance.new("UIListLayout")
+        layout.Parent=menu
+
+        for _,option in ipairs(options) do
+            local optionButton=Instance.new("TextButton")
+            optionButton.Size=UDim2.new(1,0,0,32)
+            optionButton.BackgroundColor3=option==CONFIG.Camlock.AimPart and COLORS.On or COLORS.Input
+            optionButton.BorderSizePixel=0
+            optionButton.Font=Enum.Font.Gotham
+            optionButton.Text=option
+            optionButton.TextColor3=COLORS.Text
+            optionButton.TextSize=12
+            optionButton.ZIndex=21
+            optionButton.Parent=menu
+
+            connect(optionButton.MouseButton1Click,function()
+                CONFIG.Camlock.AimPart=option
+                callback(option)
+                closeMenu()
+                refresh()
+            end)
+        end
+    end)
+
+    return holder
+end
+
+local function slider(name,value,min,max,callback)
+    local holder=Instance.new("Frame")
+    holder.Size=UDim2.new(1,0,0,55)
+    holder.BackgroundTransparency=1
+    holder.Parent=Content
+
+    local label=Instance.new("TextLabel")
+    label.BackgroundTransparency=1
+    label.Size=UDim2.new(1,0,0,22)
+    label.Font=Enum.Font.Gotham
+    label.TextColor3=COLORS.Text
+    label.TextSize=13
+    label.TextXAlignment=Enum.TextXAlignment.Left
+    label.Text=name.."  "..tostring(value)
+    label.Parent=holder
+
+    local bar=Instance.new("Frame")
+    bar.Position=UDim2.fromOffset(0,30)
+    bar.Size=UDim2.new(1,0,0,6)
+    bar.BackgroundColor3=COLORS.Input
+    bar.BorderSizePixel=0
+    bar.Parent=holder
+
+    local corner=Instance.new("UICorner")
+    corner.CornerRadius=UDim.new(1,0)
+    corner.Parent=bar
+
+    local fill=Instance.new("Frame")
+    fill.Size=UDim2.new((value-min)/(max-min),0,1,0)
+    fill.BackgroundColor3=COLORS.On
+    fill.BorderSizePixel=0
+    fill.Parent=bar
+
+    local fillCorner=Instance.new("UICorner")
+    fillCorner.CornerRadius=UDim.new(1,0)
+    fillCorner.Parent=fill
+
+    local dragging=false
+
+    local function setFromX(x)
+        local pct=math.clamp((x-bar.AbsolutePosition.X)/bar.AbsoluteSize.X,0,1)
+        local newValue=min+(max-min)*pct
+
+        if max-min<=1 then
+            newValue=math.floor(newValue*100)/100
+        else
+            newValue=math.floor(newValue+.5)
+        end
+
+        fill.Size=UDim2.new(pct,0,1,0)
+        label.Text=name.."  "..tostring(newValue)
+        callback(newValue)
+    end
+
+    connect(bar.InputBegan,function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 then
+            dragging=true
+            setFromX(input.Position.X)
+        end
+    end)
+
+    connect(UIS.InputChanged,function(input)
+        if dragging and input.UserInputType==Enum.UserInputType.MouseMovement then
+            setFromX(input.Position.X)
+        end
+    end)
+
+    connect(UIS.InputEnded,function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 then
+            dragging=false
+        end
+    end)
+
+    return holder
+end
+
+local function toggle(name,value,callback)
+    local b=button(name..": "..(value and "ON" or "OFF"),function(btn)
+        value=not value
+        btn.Text=name..": "..(value and "ON" or "OFF")
+        btn.BackgroundColor3=value and COLORS.On or COLORS.Button
+        callback(value)
+    end)
+
+    b.BackgroundColor3=value and COLORS.On or COLORS.Button
+
+    return b
+end
+
+local function removeHighlight(plr)
+    local h=Highlights[plr]
+
+    if h then
+        pcall(function()
+            h:Destroy()
+        end)
+
+        Highlights[plr]=nil
+    end
+end
+
+local function shouldHighlight(plr)
+    if not CONFIG.Visuals.HighlightAll then
+        return false
+    end
+
+    if not plr or plr==LP then
+        return false
+    end
+
+    if CONFIG.Visuals.TeamCheck and LP.Team and plr.Team==LP.Team then
+        return false
+    end
+
+    return plr.Character~=nil
+end
+
+local function updateHighlight(plr)
+    if not shouldHighlight(plr) then
+        removeHighlight(plr)
+        return
+    end
+
+    local character=plr.Character
+
+    if not character then
+        removeHighlight(plr)
+        return
+    end
+
+    local h=Highlights[plr]
+
+    if not h or h.Adornee~=character then
+        removeHighlight(plr)
+
+        h=Instance.new("Highlight")
+        h.Name="ZZZHighlight"
+        h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+        h.FillTransparency=.85
+        h.OutlineTransparency=0
+        h.Parent=workspace
+
+        Highlights[plr]=h
+    end
+
+    h.Adornee=character
+
+    if isWhitelisted(plr) then
+        h.FillColor=COLORS.White
+        h.OutlineColor=COLORS.White
+    else
+        h.FillColor=COLORS.Enemy
+        h.OutlineColor=COLORS.Enemy
+    end
+end
+
+local function updateAllHighlights()
+    if not CONFIG.Visuals.HighlightAll then
+        for plr in pairs(Highlights) do
+            removeHighlight(plr)
+        end
+        return
+    end
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LP then
+            updateHighlight(plr)
+        end
+    end
+end
+
+local function clearHighlights()
+    for plr,h in pairs(Highlights) do
+        pcall(function()
+            h:Destroy()
+        end)
+
+        Highlights[plr]=nil
+    end
+end
+
+local function refreshConfigList()
+    for _,child in ipairs(Content:GetChildren()) do
+        if child.Name=="ConfigRow" then
+            child:Destroy()
+        end
+    end
+
+    for _,name in ipairs(getConfigs()) do
+        local row=Instance.new("Frame")
+        row.Name="ConfigRow"
+        row.Size=UDim2.new(1,0,0,40)
+        row.BackgroundColor3=name==selectedConfig and COLORS.On or COLORS.Input
+        row.BorderSizePixel=0
+        row.Parent=Content
+
+        local corner=Instance.new("UICorner")
+        corner.CornerRadius=UDim.new(0,6)
+        corner.Parent=row
+
+        local select=Instance.new("TextButton")
+        select.BackgroundTransparency=1
+        select.Position=UDim2.fromOffset(8,0)
+        select.Size=UDim2.new(1,-150,1,0)
+        select.Font=Enum.Font.Gotham
+        select.Text=name
+        select.TextColor3=COLORS.Text
+        select.TextSize=13
+        select.TextXAlignment=Enum.TextXAlignment.Left
+        select.Parent=row
+
+        local load=Instance.new("TextButton")
+        load.Size=UDim2.fromOffset(55,28)
+        load.Position=UDim2.new(1,-125,0,6)
+        load.BackgroundColor3=COLORS.Button
+        load.BorderSizePixel=0
+        load.Font=Enum.Font.Gotham
+        load.Text="Load"
+        load.TextColor3=COLORS.Text
+        load.TextSize=12
+        load.Parent=row
+
+        local lc=Instance.new("UICorner")
+        lc.CornerRadius=UDim.new(0,5)
+        lc.Parent=load
+
+        local del=Instance.new("TextButton")
+        del.Size=UDim2.fromOffset(55,28)
+        del.Position=UDim2.new(1,-65,0,6)
+        del.BackgroundColor3=COLORS.Button
+        del.BorderSizePixel=0
+        del.Font=Enum.Font.Gotham
+        del.Text="Delete"
+        del.TextColor3=COLORS.Text
+        del.TextSize=12
+        del.Parent=row
+
+        local dc=Instance.new("UICorner")
+        dc.CornerRadius=UDim.new(0,5)
+        dc.Parent=del
+
+        connect(select.MouseButton1Click,function()
+            selectedConfig=name
+            refreshConfigList()
+        end)
+
+        connect(load.MouseButton1Click,function()
+            loadConfig(name)
+            updateAllHighlights()
+            refresh()
+        end)
+
+        connect(del.MouseButton1Click,function()
+            deleteConfig(name)
+            refreshConfigList()
+        end)
+    end
+end
+
+function refresh()
+    clearContent()
+
+    if currentTab=="Combat" then
+        section("Camlock")
+
+        toggle("Camlock",CONFIG.Camlock.Enabled,function(v)
+            CONFIG.Camlock.Enabled=v
+
+            if not v then
+                target=nil
+            else
+                target=closest()
+            end
+        end)
+
+        button("Keybind: "..CONFIG.Camlock.Keybind,function(b)
+            waitingCam=true
+            b.Text="Press a key..."
+        end)
+
+        dropdown("Aim Part",CONFIG.Camlock.AimPart,AIM_PARTS,function(v)
+            CONFIG.Camlock.AimPart=v
+        end)
+
+        slider("Smoothing",CONFIG.Camlock.Smoothing,0,1,function(v)
+            CONFIG.Camlock.Smoothing=v
+        end)
+
+        slider("FOV",CONFIG.Camlock.FOV,25,500,function(v)
+            CONFIG.Camlock.FOV=v
+        end)
+
+        toggle("FOV Check",CONFIG.Camlock.FOVCheck,function(v)
+            CONFIG.Camlock.FOVCheck=v
+        end)
+
+        toggle("FOV Based",CONFIG.Camlock.FOVBased,function(v)
+            CONFIG.Camlock.FOVBased=v
+            target=nil
+            CONFIG.Camlock.Enabled=false
+        end)
+
+        button("Reset Target",function()
+            target=nil
+        end)
+
+    elseif currentTab=="Checks" then
+        section("Checks")
+
+        toggle("Wall Check",CONFIG.Checks.WallCheck,function(v)
+            CONFIG.Checks.WallCheck=v
+        end)
+
+        toggle("Visible Check",CONFIG.Checks.VisibleCheck,function(v)
+            CONFIG.Checks.VisibleCheck=v
+        end)
+
+        toggle("KO Check",CONFIG.Checks.KOCheck,function(v)
+            CONFIG.Checks.KOCheck=v
+        end)
+
+        toggle("Team Check",CONFIG.Checks.TeamCheck,function(v)
+            CONFIG.Checks.TeamCheck=v
+        end)
+
+    elseif currentTab=="Visuals" then
+        section("Visuals")
+
+        toggle("Highlight All",CONFIG.Visuals.HighlightAll,function(v)
+            CONFIG.Visuals.HighlightAll=v
+
+            if v then
+                updateAllHighlights()
+            else
+                clearHighlights()
+            end
+        end)
+
+        toggle("Team Check",CONFIG.Visuals.TeamCheck,function(v)
+            CONFIG.Visuals.TeamCheck=v
+            updateAllHighlights()
+        end)
+
+    elseif currentTab=="Whitelist" then
+        section("Whitelist")
+
+        toggle("Whitelist Mode",CONFIG.Whitelist.Enabled,function(v)
+            CONFIG.Whitelist.Enabled=v
+
+            if CONFIG.Camlock.Enabled then
+                target=nil
+            end
+
+            updateAllHighlights()
+        end)
+
+        button("Keybind: "..CONFIG.Whitelist.Keybind,function(b)
+            waitingWhitelist=true
+            b.Text="Press a key..."
+        end)
+
+        button("Clear Whitelist",function()
+            table.clear(CONFIG.Whitelist.Users)
+            updateAllHighlights()
+            refresh()
+        end)
+
+        section("Whitelisted Players")
+
+        local found=false
+
+        for _,plr in ipairs(Players:GetPlayers()) do
+            if plr~=LP and isWhitelisted(plr) then
+                found=true
+
+                button(plr.Name,function()
+                    CONFIG.Whitelist.Users[tostring(plr.UserId)]=nil
+                    updateHighlight(plr)
+                    refresh()
+                end)
+            end
+        end
+
+        if not found then
+            local label=Instance.new("TextLabel")
+            label.Size=UDim2.new(1,0,0,30)
+            label.BackgroundTransparency=1
+            label.Font=Enum.Font.Gotham
+            label.Text="No whitelisted players"
+            label.TextColor3=COLORS.Muted
+            label.TextSize=13
+            label.Parent=Content
+        end
+
+    elseif currentTab=="Settings" then
+        section("Config")
+
+        textbox("Config Name",CONFIG.Config.Name,function(v)
+            CONFIG.Config.Name=v
+        end)
+
+        button("Save Config",function()
+            saveConfig(CONFIG.Config.Name)
+            refreshConfigList()
+        end)
+
+        button("Refresh Configs",function()
+            refresh()
+        end)
+
+        button("Unload Config",function()
+            unloadConfig()
+            refresh()
+        end)
+
+        toggle("Autoload Config",CONFIG.Config.Autoload,function(v)
+            CONFIG.Config.Autoload=v
+        end)
+
+        section("Saved Configs")
+        refreshConfigList()
+
+        section("GUI")
+
+        button("Hide GUI Keybind: "..CONFIG.GUI.HideKeybind,function(b)
+            waitingHide=true
+            b.Text="Press a key..."
+        end)
+
+        button("Unload Everything",function()
+            target=nil
+            CONFIG.Camlock.Enabled=false
+            clearHighlights()
+            disconnectAll()
+            FOVGui:Destroy()
+            GUI:Destroy()
+        end)
+    end
+end
+
+local tabNames={"Combat","Checks","Visuals","Whitelist","Settings"}
+
+for _,name in ipairs(tabNames) do
+    local b=Instance.new("TextButton")
+    b.Size=UDim2.fromOffset(105,35)
+    b.BackgroundColor3=name==currentTab and COLORS.On or COLORS.Button
+    b.BorderSizePixel=0
+    b.Font=Enum.Font.Gotham
+    b.Text=name
+    b.TextColor3=COLORS.Text
+    b.TextSize=12
+    b.Parent=Tabs
+
+    local c=Instance.new("UICorner")
+    c.CornerRadius=UDim.new(0,6)
+    c.Parent=b
+
+    connect(b.MouseButton1Click,function()
+        currentTab=name
+
+        for _,child in ipairs(Tabs:GetChildren()) do
+            if child:IsA("TextButton") then
+                child.BackgroundColor3=child==b and COLORS.On or COLORS.Button
+            end
+        end
+
+        refresh()
+    end)
+end
+
+local dragging=false
+local dragStart
+local startPos
+
+connect(Top.InputBegan,function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 then
+        dragging=true
+        dragStart=input.Position
+        startPos=Main.Position
+    end
+end)
+
+connect(UIS.InputChanged,function(input)
+    if dragging and input.UserInputType==Enum.UserInputType.MouseMovement then
+        local delta=input.Position-dragStart
+
+        Main.Position=UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset+delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset+delta.Y
+        )
+    end
+end)
+
+connect(UIS.InputEnded,function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 then
+        dragging=false
+    end
+end)
+
+local minimized=false
+
+connect(Minimize.MouseButton1Click,function()
+    minimized=not minimized
+
+    if minimized then
+        Content.Visible=false
+        Tabs.Visible=false
+        Main.Size=UDim2.fromOffset(590,45)
+        Minimize.Text="+"
+    else
+        Content.Visible=true
+        Tabs.Visible=true
+        Main.Size=UDim2.fromOffset(590,550)
+        Minimize.Text="-"
+    end
+end)
+
+connect(Close.MouseButton1Click,function()
+    guiHidden=true
+    Main.Visible=false
+    FOVFrame.Visible=false
+end)
+
+connect(UIS.InputBegan,function(input)
+    if input.UserInputType~=Enum.UserInputType.Keyboard then
+        return
+    end
+
+    local key=input.KeyCode
+
+    if key==Enum.KeyCode.Unknown then
+        return
+    end
+
+    local name=key.Name
+
+    if waitingCam then
+        CONFIG.Camlock.Keybind=name
+        waitingCam=false
+        refresh()
+        return
+    end
+
+    if waitingHide then
+        CONFIG.GUI.HideKeybind=name
+        waitingHide=false
+        guiHidden=false
+        Main.Visible=true
+        refresh()
+        return
+    end
+
+    if waitingWhitelist then
+        CONFIG.Whitelist.Keybind=name
+        waitingWhitelist=false
+        refresh()
+        return
+    end
+
+    if name==CONFIG.GUI.HideKeybind then
+        guiHidden=not guiHidden
+        Main.Visible=not guiHidden
+        FOVFrame.Visible=CONFIG.Camlock.FOVCheck and not guiHidden
+        return
+    end
+
+    if name==CONFIG.Whitelist.Keybind then
+        local plr=playerUnderCursor()
+
+        if plr then
+            local id=tostring(plr.UserId)
+
+            if CONFIG.Whitelist.Users[id] then
+                CONFIG.Whitelist.Users[id]=nil
+            else
+                CONFIG.Whitelist.Users[id]=true
+            end
+
+            updateHighlight(plr)
+
+            if currentTab=="Whitelist" and Main.Visible then
+                refresh()
+            end
+        end
+
+        return
+    end
+
+    if name==CONFIG.Camlock.Keybind then
+        if CONFIG.Camlock.FOVBased then
+            return
+        end
+
+        CONFIG.Camlock.Enabled=not CONFIG.Camlock.Enabled
+
+        if CONFIG.Camlock.Enabled then
+            target=closest()
+        else
+            target=nil
+        end
+
+        if currentTab=="Combat" and Main.Visible then
+            refresh()
+        end
+    end
+end)
+
+local fovTimer=0
+
+connect(RS.RenderStepped,function(dt)
+    fovTimer+=dt
+
+    if fovTimer>=.03 then
+        fovTimer=0
+        updateFOV()
+    end
+
+    if CONFIG.Camlock.FOVBased then
+        if target then
+            local character=target.Character
+            local part=character and aimPart(character)
+
+            if not target.Parent or not character or not alive(character) or (CONFIG.Checks.KOCheck and ko(character)) or not isEnemy(target) or not part then
+                target=nil
+            else
+                local pos,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+                if not onScreen or pos.Z<=0 or (Vector2.new(pos.X,pos.Y)-mousePosition()).Magnitude>CONFIG.Camlock.FOV then
+                    target=nil
+                end
+            end
+        end
+
+        if not target then
+            target=closest()
+        end
+
+        CONFIG.Camlock.Enabled=target~=nil
+
+        if not target then
+            return
+        end
+    elseif not CONFIG.Camlock.Enabled then
+        return
+    end
+
+    if target then
+        if not target.Parent then
+            target=nil
+        else
+            local character=target.Character
+
+            if not character then
+                target=nil
+            elseif not alive(character) then
+                target=nil
+            elseif CONFIG.Checks.KOCheck and ko(character) then
+                target=nil
+            end
+        end
+    end
+
+    if not target then
+        target=closest()
+
+        if not target then
+            return
+        end
+    end
+
+    if not target.Parent then
+        target=nil
+        return
+    end
+
+    if not isEnemy(target) then
+        return
+    end
+
+    local character=target.Character
+
+    if not character or not alive(character) then
+        target=nil
+        return
+    end
+
+    if CONFIG.Checks.KOCheck and ko(character) then
+        target=nil
+        return
+    end
+
+    local part=aimPart(character)
+
+    if not part then
+        return
+    end
+
+    if CONFIG.Checks.WallCheck or CONFIG.Checks.VisibleCheck then
+        if not visible(part,character) then
+            return
+        end
+    end
+
+    if CONFIG.Camlock.FOVCheck then
+        local pos,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+        if not onScreen or pos.Z<=0 then
+            return
+        end
+
+        local d=(Vector2.new(pos.X,pos.Y)-mousePosition()).Magnitude
+
+        if d>CONFIG.Camlock.FOV then
+            return
+        end
+    end
+
+    local desired=CFrame.lookAt(Camera.CFrame.Position,part.Position)
+
+    Camera.CFrame=Camera.CFrame:Lerp(
+        desired,
+        math.clamp(CONFIG.Camlock.Smoothing,0,1)
+    )
+end)
+
+local function setupPlayer(plr)
+    if plr==LP then
+        return
+    end
+
+    playerConnections[plr]={}
+
+    local list=playerConnections[plr]
+
+    table.insert(list,plr.CharacterAdded:Connect(function()
+        task.wait(.2)
+
+        if CONFIG.Visuals.HighlightAll then
+            updateHighlight(plr)
+        end
+
+        if target==plr and CONFIG.Camlock.Enabled then
+            target=nil
+        end
+    end))
+
+    table.insert(list,plr:GetPropertyChangedSignal("Team"):Connect(function()
+        if CONFIG.Visuals.HighlightAll then
+            updateHighlight(plr)
+        end
+
+        if target==plr and CONFIG.Checks.TeamCheck and LP.Team and plr.Team==LP.Team then
+            target=nil
+        end
+    end))
+
+    if CONFIG.Visuals.HighlightAll and plr.Character then
+        updateHighlight(plr)
+    end
+end
+
+for _,plr in ipairs(Players:GetPlayers()) do
+    setupPlayer(plr)
+end
+
+connect(Players.PlayerAdded,function(plr)
+    setupPlayer(plr)
+end)
+
+connect(Players.PlayerRemoving,function(plr)
+    removeHighlight(plr)
+
+    local list=playerConnections[plr]
+
+    if list then
+        for _,c in ipairs(list) do
+            pcall(function()
+                c:Disconnect()
+            end)
+        end
+    end
+
+    playerConnections[plr]=nil
+
+    if target==plr then
+        target=nil
+    end
+end)
+
+refresh()
+updateFOV()
