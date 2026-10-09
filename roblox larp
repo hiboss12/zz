@@ -1,0 +1,138 @@
+getgenv().Time = 0
+
+getgenv().Head = {
+    215718515,
+    1125510,
+    74891470,
+    1029025,
+    7214246280,
+    5891039736
+}
+
+getgenv().Torso = {
+    5084106953,
+    15506874658
+}
+
+getgenv().Headless = true
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local function weldParts(part0, part1, c0, c1)
+    local weld = Instance.new("Weld")
+    weld.Part0 = part0
+    weld.Part1 = part1
+    weld.C0 = c0
+    weld.C1 = c1
+    weld.Parent = part0
+    return weld
+end
+
+local function findAttachment(rootPart, name)
+    for _, obj in ipairs(rootPart:GetDescendants()) do
+        if obj:IsA("Attachment") and obj.Name == name then
+            return obj
+        end
+    end
+end
+
+local function removeAccessories(character)
+    for _, item in ipairs(character:GetChildren()) do
+        if item:IsA("Accessory") then
+            item:Destroy()
+        end
+    end
+end
+
+local function applyHeadless(character)
+    local head = character:FindFirstChild("Head")
+    if not head then return end
+
+    head.Transparency = 1
+    head.LocalTransparencyModifier = 1
+
+    for _, obj in ipairs(head:GetDescendants()) do
+        if obj:IsA("Decal") or obj:IsA("Texture") then
+            obj.Transparency = 1
+        elseif obj:IsA("BasePart") then
+            obj.Transparency = 1
+            obj.LocalTransparencyModifier = 1
+        end
+    end
+end
+
+local function addAccessory(assetId, parentPart, character)
+    local ok, objects = pcall(function()
+        return game:GetObjects("rbxassetid://" .. tostring(assetId))
+    end)
+
+    if not ok or not objects or not objects[1] then
+        return
+    end
+
+    local accessory = objects[1]
+    local handle = accessory:FindFirstChild("Handle", true)
+
+    if not handle or not handle:IsA("BasePart") then
+        accessory:Destroy()
+        return
+    end
+
+    accessory.Parent = character
+    handle.Anchored = false
+    handle.CanCollide = false
+    handle.Massless = true
+
+    local attachment = handle:FindFirstChildWhichIsA("Attachment")
+
+    if attachment then
+        local parentAttachment = findAttachment(parentPart, attachment.Name)
+
+        if parentAttachment then
+            weldParts(parentPart, handle, parentAttachment.CFrame, attachment.CFrame)
+        else
+            weldParts(parentPart, handle, CFrame.new(0, 0.5, 0), CFrame.new())
+        end
+    else
+        weldParts(parentPart, handle, CFrame.new(0, 0.5, 0), CFrame.new())
+    end
+end
+
+local function applyCharacter(character)
+    task.wait(getgenv().Time)
+
+    if not character or not character.Parent then
+        return
+    end
+
+    removeAccessories(character)
+
+    local head = character:WaitForChild("Head", 10)
+    local torso = character:FindFirstChild("UpperTorso")
+        or character:FindFirstChild("Torso")
+
+    if head then
+        if getgenv().Headless then
+            applyHeadless(character)
+        end
+
+        for _, assetId in ipairs(getgenv().Head) do
+            addAccessory(assetId, head, character)
+        end
+    end
+
+    if torso then
+        for _, assetId in ipairs(getgenv().Torso) do
+            addAccessory(assetId, torso, character)
+        end
+    end
+end
+
+player.CharacterAdded:Connect(function(character)
+    task.spawn(applyCharacter, character)
+end)
+
+if player.Character then
+    task.spawn(applyCharacter, player.Character)
+end
