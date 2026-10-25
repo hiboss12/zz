@@ -18,6 +18,7 @@ local Settings = {
     WallCheck = true,
     AutoKillAll = false,
     AutoFire = false,
+    AutoFireKey = "T",
     TriggerBot = false,
     Range = 150,
     Aimbot = false,
@@ -34,6 +35,7 @@ local Settings = {
     FOVCircle = false,
     FOVRadius = 120,
     Noclip = false,
+    InfJump = false,
     AntiAfk = false,
     Keybind = "RightShift",
     ConfigName = "default",
@@ -57,6 +59,8 @@ local S = {
     fovFrame = nil,
     keybindBox = nil,
     keybindListening = false,
+    afKeyBox = nil,
+    afKeyListening = false,
     configList = {},
     configIndex = 0,
 }
@@ -222,7 +226,7 @@ local function isPlrMurderer(plr)
     if not plr or plr == LocalPlayer or not plr.Parent then return false end
     if getRoleFromCache(plr) == "Murderer" then return true end
     local char = plr.Character
-    local bp = plr:FindFirstChildOfClass("Backpack")
+    local bp = plr:FindFirstChild("Backpack")
     return (char and char:FindFirstChild("Knife")) or (bp and bp:FindFirstChild("Knife")) or false
 end
 
@@ -729,7 +733,10 @@ end
 local ESP = { highlights = {}, nametags = {}, gunHL = nil, gunTag = nil }
 
 local function clearHighlights(plr)
-    if ESP.highlights[plr] then ESP.highlights[plr]:Destroy(); ESP.highlights[plr] = nil end
+    if ESP.highlights[plr] then
+        if ESP.highlights[plr].Parent then ESP.highlights[plr]:Destroy() end
+        ESP.highlights[plr] = nil
+    end
     if ESP.nametags[plr] then
         if ESP.nametags[plr].bb and ESP.nametags[plr].bb.Parent then ESP.nametags[plr].bb:Destroy() end
         ESP.nametags[plr] = nil
@@ -784,8 +791,10 @@ local function applyESP(plr)
     local show = role == "Murderer" or role == "Sheriff" or role == "Hero" or Settings.ESPNentral
     if Settings.ESPRoles and show then
         local color = ROLE_COLORS[role] or ROLE_COLORS.Innocent
-        if not ESP.highlights[plr] then
-            local h = Instance.new("Highlight")
+        local h = ESP.highlights[plr]
+        if not h or not h.Parent or h.Parent ~= char then
+            if h and h.Parent then h:Destroy() end
+            h = Instance.new("Highlight")
             h.FillColor = color
             h.FillTransparency = 0.2
             h.OutlineTransparency = 1
@@ -793,33 +802,33 @@ local function applyESP(plr)
             h.Parent = char
             ESP.highlights[plr] = h
         else
-            ESP.highlights[plr].FillColor = color
+            h.FillColor = color
         end
     elseif ESP.highlights[plr] then
-        ESP.highlights[plr]:Destroy()
+        if ESP.highlights[plr].Parent then ESP.highlights[plr]:Destroy() end
         ESP.highlights[plr] = nil
     end
     if Settings.ESPNametag and show then
-        if not ESP.nametags[plr] then
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            if hrp then
-                local bb = Instance.new("BillboardGui")
-                bb.Size = UDim2.new(0, 150, 0, 34)
-                bb.StudsOffset = Vector3.new(0, 3.5, 0)
-                bb.AlwaysOnTop = true
-                bb.Adornee = hrp
-                bb.Parent = hrp
-                local lbl = Instance.new("TextLabel")
-                lbl.Size = UDim2.new(1, 0, 1, 1)
-                lbl.BackgroundTransparency = 1
-                lbl.TextSize = 13
-                lbl.TextStrokeTransparency = 0.3
-                lbl.Parent = bb
-                ESP.nametags[plr] = { bb = bb, lbl = lbl }
-            end
+        local data = ESP.nametags[plr]
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp and (not data or not data.bb or not data.bb.Parent or data.bb.Parent ~= hrp) then
+            if data and data.bb and data.bb.Parent then data.bb:Destroy() end
+            local bb = Instance.new("BillboardGui")
+            bb.Size = UDim2.new(0, 150, 0, 34)
+            bb.StudsOffset = Vector3.new(0, 3.5, 0)
+            bb.AlwaysOnTop = true
+            bb.Adornee = hrp
+            bb.Parent = hrp
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(1, 0, 1, 1)
+            lbl.BackgroundTransparency = 1
+            lbl.TextSize = 13
+            lbl.TextStrokeTransparency = 0.3
+            lbl.Parent = bb
+            ESP.nametags[plr] = { bb = bb, lbl = lbl }
         end
     elseif ESP.nametags[plr] then
-        ESP.nametags[plr].bb:Destroy()
+        if ESP.nametags[plr].bb and ESP.nametags[plr].bb.Parent then ESP.nametags[plr].bb:Destroy() end
         ESP.nametags[plr] = nil
     end
 end
@@ -873,7 +882,14 @@ local function hookFadeEvent()
     if S.fadeConn then pcall(function() S.fadeConn:Disconnect() end) end
     local ev = getFadeEvent()
     if not ev then return end
-    S.fadeConn = ev.OnClientEvent:Connect(function(...) updateRoleCache(...) end)
+    S.fadeConn = ev.OnClientEvent:Connect(function(...)
+        S.roleCache = {}
+        MurdererCache.plr = nil
+        MurdererCache.time = 0
+        updateRoleCache(...)
+        task.wait(0.1)
+        refreshESP()
+    end)
 end
 
 local function findCoinContainer()
@@ -1045,6 +1061,7 @@ local function unloadAll()
     Settings.AutoFarmCoins = false
     Settings.AutoFarmCandy = false
     Settings.Noclip = false
+    Settings.InfJump = false
     Settings.AntiAfk = false
     Settings.ESPRoles = false
     Settings.ESPNametag = false
@@ -1366,6 +1383,12 @@ local function makeTextBox(name, default, onChange)
     return box
 end
 
+local function setAutoFire(v)
+    Settings.AutoFire = v and true or false
+    local c = S.controls.AutoFire
+    if c and c.set then pcall(c.set, Settings.AutoFire) end
+end
+
 makeLabel("Gun")
 makeButton("Pick up Gun", function() bringGunToPlayer() end)
 makeToggle("Auto Gun", "AutoGun", false, function(v)
@@ -1387,7 +1410,23 @@ makeSlider("Smoothness", "Smoothness", 0.02, 1, 0.25)
 makeSlider("Aim Distance", "AimDistance", 20, 1000, 500)
 makeCycle("Target Bone", "TargetBone", {"Head", "Torso", "Root"}, "Head")
 makeToggle("Auto Kill", "AutoKill", false)
-makeToggle("Auto Fire", "AutoFire", false)
+
+local autoFireBtn
+if isMobile then
+    autoFireBtn = makeButton("Auto Fire  [OFF]", function()
+        setAutoFire(not Settings.AutoFire)
+    end)
+    S.controls.AutoFire = { type = "button", set = function(v)
+        Settings.AutoFire = v and true or false
+        if autoFireBtn then
+            autoFireBtn.Text = "Auto Fire  " .. (Settings.AutoFire and "[ON]" or "[OFF]")
+            autoFireBtn.TextColor3 = Settings.AutoFire and Color3.fromRGB(0, 220, 130) or Color3.fromRGB(220, 220, 220)
+        end
+    end }
+else
+    makeToggle("Auto Fire", "AutoFire", false)
+end
+
 makeToggle("Trigger Bot", "TriggerBot", false)
 makeToggle("Wall Check", "WallCheck", true)
 makeSlider("Range", "Range", 20, 1000, 150)
@@ -1470,6 +1509,7 @@ makeToggle("Noclip", "Noclip", false, function(v)
         end
     end
 end)
+makeToggle("Infinite Jump", "InfJump", false)
 makeToggle("Anti AFK", "AntiAfk", false, function(v)
     if v then
         if S.afkThread then return end
@@ -1534,8 +1574,8 @@ selectBtn = makeButton("Select Config: none", function()
     selectBtn.Text = "Select Config: " .. n
 end)
 
-makeLabel("Menu Keybind")
-S.keybindBox = makeTextBox("Click box then press any key", Settings.Keybind, function(t)
+makeLabel("Keybinds")
+S.keybindBox = makeTextBox("Menu key (click box then press key)", Settings.Keybind, function(t)
     if t and t ~= "" then Settings.Keybind = t end
 end)
 S.controls.Keybind = { type = "keybind", set = function(v)
@@ -1546,6 +1586,19 @@ S.keybindBox.Focused:Connect(function() S.keybindListening = true end)
 S.keybindBox.FocusLost:Connect(function()
     task.wait(0.05)
     S.keybindListening = false
+end)
+
+S.afKeyBox = makeTextBox("Auto Fire key (click box then press key)", Settings.AutoFireKey, function(t)
+    if t and t ~= "" then Settings.AutoFireKey = t end
+end)
+S.controls.AutoFireKey = { type = "keybind", set = function(v)
+    Settings.AutoFireKey = tostring(v)
+    if S.afKeyBox then S.afKeyBox.Text = tostring(v) end
+end }
+S.afKeyBox.Focused:Connect(function() S.afKeyListening = true end)
+S.afKeyBox.FocusLost:Connect(function()
+    task.wait(0.05)
+    S.afKeyListening = false
 end)
 
 makeLabel("Script")
@@ -1645,7 +1698,27 @@ UserInputService.InputBegan:Connect(function(input)
         return
     end
 
+    if S.afKeyListening then
+        Settings.AutoFireKey = kc.Name
+        if S.afKeyBox then
+            S.afKeyBox.Text = kc.Name
+            pcall(function() S.afKeyBox:ReleaseFocus() end)
+        end
+        S.afKeyListening = false
+        return
+    end
+
     if UserInputService:GetFocusedTextBox() then return end
+
+    local afKey = Settings.AutoFireKey
+    if afKey and afKey ~= "" then
+        local ok, target = pcall(function() return Enum.KeyCode[afKey] end)
+        if ok and target and kc == target then
+            setAutoFire(not Settings.AutoFire)
+            notify("Auto Fire " .. (Settings.AutoFire and "ON" or "OFF"))
+            return
+        end
+    end
 
     local kb = Settings.Keybind
     if kb and kb ~= "" then
@@ -1656,6 +1729,12 @@ UserInputService.InputBegan:Connect(function(input)
         end
     end
 end)
+
+trackConn("infjump", UserInputService.JumpRequest:Connect(function()
+    if not Settings.InfJump then return end
+    local hum = getHumanoid()
+    if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+end))
 
 local autoFireLast = 0
 trackConn("autofire", RunService.RenderStepped:Connect(function()
@@ -1810,10 +1889,29 @@ task.spawn(function()
     end
 end)
 
+local function hookPlayerESP(plr)
+    plr.CharacterAdded:Connect(function()
+        task.wait(0.2)
+        refreshESP()
+    end)
+    task.wait(0.15)
+    refreshESP()
+end
+
+for _, plr in ipairs(Players:GetPlayers()) do
+    if plr ~= LocalPlayer then hookPlayerESP(plr) end
+end
+
+Players.PlayerAdded:Connect(function(plr)
+    hookPlayerESP(plr)
+end)
+
 Players.PlayerRemoving:Connect(function(plr)
     clearHighlights(plr)
     S.roleCache[plr.Name] = nil
     TargetVisibility[plr] = nil
+    task.wait(0.1)
+    refreshESP()
 end)
 
 LocalPlayer.CharacterAdded:Connect(function()
