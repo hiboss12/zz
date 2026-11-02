@@ -1,0 +1,4960 @@
+local Players=game:GetService("Players")
+local UIS=game:GetService("UserInputService")
+local RS=game:GetService("RunService")
+local HttpService=game:GetService("HttpService")
+local TeleportService=game:GetService("TeleportService")
+local TweenService=game:GetService("TweenService")
+local VIM=game:GetService("VirtualInputManager")
+local CS=game:GetService("CollectionService")
+
+local MM2_URL="https://raw.githubusercontent.com/hiboss12/zz/refs/heads/main/mm22222"
+
+local LP=Players.LocalPlayer
+local Camera=workspace.CurrentCamera
+local RIVALS_PLACE=17625359962
+local rivalsUniverse=nil
+
+local isMobile=UIS.TouchEnabled and not UIS.KeyboardEnabled
+
+if type(_G.ZZZUnload)=="function" then
+    pcall(_G.ZZZUnload)
+end
+
+local function isRivals()
+    if game.PlaceId==RIVALS_PLACE then
+        return true
+    end
+
+    if rivalsUniverse and game.GameId==rivalsUniverse then
+        return true
+    end
+
+    return false
+end
+
+task.spawn(function()
+    local ok,result=pcall(function()
+        return game:HttpGet("https://apis.roblox.com/universes/v1/places/"..RIVALS_PLACE.."/universe")
+    end)
+
+    if not ok or not result then
+        return
+    end
+
+    local okDecode,data=pcall(function()
+        return HttpService:JSONDecode(result)
+    end)
+
+    if okDecode and data and tonumber(data.universeId) then
+        rivalsUniverse=tonumber(data.universeId)
+
+        task.wait(.2)
+
+        if type(refresh)=="function" then
+            refresh()
+        end
+    end
+end)
+
+local CONFIG={
+    Silent={
+        Enabled=false,
+        AimPart="Head",
+        AimLead=.5,
+        FOV=300,
+        FOVCheck=true,
+        Orbit=false,
+        OrbitKeybind="V",
+        OrbitHeight=5,
+        OrbitSpeed=.15,
+        OrbitDistance=10
+    },
+    Triggerbot={
+        Enabled=false,
+        Keybind="T",
+        Mode="Hold",
+        Delay=.08,
+        Checks={
+            Forcefield=true,
+            Visible=true,
+            KO=true,
+            Katana=true,
+            Team=true
+        }
+    },
+    Checks={
+        WallCheck=false,
+        KOCheck=false,
+        VisibleCheck=false,
+        TeamCheck=true
+    },
+    Games={
+        ArsenalHitbox=false,
+        Noclip=false,
+        NoclipKeybind="N",
+        CFrameSpeedEnabled=false,
+        CFrameSpeed=0.5,
+        CFrameKeybind="Z",
+        MM2Script=false
+    },
+    Whitelist={
+        Enabled=false,
+        Keybind="P",
+        Users={}
+    },
+    Visuals={
+        HighlightAll=false,
+        TeamCheck=true
+    },
+    Settings={
+        FPSUnlock=true
+    },
+    GUI={
+        HideKeybind="RightShift",
+        Scale=.75
+    },
+    Config={
+        Name="",
+        Autoload=false
+    }
+}
+
+local COLORS={
+    Window=Color3.fromRGB(248,248,251),
+    Sidebar=Color3.fromRGB(238,239,244),
+    Card=Color3.fromRGB(255,255,255),
+    Input=Color3.fromRGB(231,233,239),
+    NavActive=Color3.fromRGB(255,255,255),
+    NavHover=Color3.fromRGB(244,245,249),
+    RowHover=Color3.fromRGB(238,240,247),
+    Accent=Color3.fromRGB(64,105,235),
+    AccentDim=Color3.fromRGB(222,231,255),
+    Border=Color3.fromRGB(205,208,218),
+    Text=Color3.fromRGB(26,28,34),
+    Muted=Color3.fromRGB(132,136,148),
+    Track=Color3.fromRGB(215,218,227),
+    SwitchOff=Color3.fromRGB(198,202,212),
+    Whitelist=Color3.fromRGB(138,78,232),
+    Shadow=Color3.fromRGB(22,24,32)
+}
+
+local AIM_PARTS={"Head","Random","Torso","UpperTorso","LowerTorso","Root"}
+
+local TRIGGER_CHECKS={
+    {key="Forcefield",label="Forcefield Check",short="Forcefield"},
+    {key="Visible",label="Visible Check",short="Visible"},
+    {key="KO",label="KO Check",short="KO"},
+    {key="Katana",label="Katana Check",short="Katana"},
+    {key="Team",label="Team Check",short="Team"}
+}
+
+local TAB_SUBTITLES={
+    Combat="Silent aim and field of view",
+    Checks="Visibility and target filters",
+    Games="Game specific features",
+    Visuals="Chams and player spectate",
+    Whitelist="Player whitelist management",
+    Avatars="Outfit presets",
+    Settings="Menu, configs and performance"
+}
+
+local SUBTABS={
+    Combat={"Aim","Field of View","Orbit","Triggerbot"},
+    Checks={"Filters"},
+    Games={"Cheats","Movement"},
+    Visuals={"Chams","Spectate"},
+    Whitelist={"Players"},
+    Avatars={"Outfits"},
+    Settings={"Server","Performance","Interface","Configs"}
+}
+
+local UI={}
+
+UI.WinW=770
+UI.WinH=610
+UI.Hidden=false
+UI.Built=false
+UI.LastBuild=0
+UI.LastFOVSize=nil
+UI.Dragging=false
+UI.Resizing=false
+UI.Minimized=false
+UI.Pages={}
+
+local connections={}
+local guiConnections={}
+local refreshConnections={}
+local dirtyPages={}
+local currentPage=nil
+local target=nil
+local currentTab="Combat"
+local currentSubTab=nil
+local currentCard=nil
+local configListParent=nil
+local configNameBox=nil
+local applyLoadedConfig=nil
+local waitingTrigger=false
+local waitingHide=false
+local waitingWhitelist=false
+local waitingNoclip=false
+local waitingCFrame=false
+local waitingOrbit=false
+local selectedConfig=""
+local selectedSpectateTarget=nil
+local spectateSearch=""
+local isSpectating=false
+local noclipConnection=nil
+local originalCollisions=setmetatable({}, {__mode="k"})
+local originalHitboxProperties=setmetatable({}, {__mode="k"})
+local randomPartCache=setmetatable({}, {__mode="k"})
+local randomPartTime=setmetatable({}, {__mode="k"})
+local gameFeatureTimer=0
+local serverInfoTimer=0
+local highlightTimer=0
+local outfitOneEnabled=false
+local outfitOneStates={}
+local outfitOneAdded={}
+local outfitOneCharacterConnection=nil
+local serverInfoLabel=nil
+local joinJobId=""
+
+local camRun=false
+local orbitRun=false
+local noclipRun=false
+local cframeRun=false
+local triggerHeld=false
+local triggerTimer=0
+
+local orbitTarget=nil
+local orbitAngle=0
+local orbitPart=nil
+local orbitActive=false
+local orbitState=false
+
+local camActive=false
+local camLocked=false
+local aimRotation=nil
+local aimTarget=nil
+local savedSensitivity=nil
+local targetDistance=math.huge
+
+local silentReady=false
+local silentUtil=nil
+local silentEnum=nil
+local silentGU=nil
+local silentOriginalRaycast=nil
+local silentFireRemote=nil
+local silentFireOriginal=nil
+
+local shotPart=nil
+local shotPos=nil
+local shotOrigin=nil
+local shotTime=0
+
+local Highlights={}
+local playerConnections={}
+local navButtons={}
+
+function create(class,props)
+    local inst=Instance.new(class)
+
+    for k,v in pairs(props) do
+        inst[k]=v
+    end
+
+    return inst
+end
+
+function corner(inst,radius)
+    local c=Instance.new("UICorner")
+    c.CornerRadius=UDim.new(0,radius)
+    c.Parent=inst
+    return c
+end
+
+function stroke(inst,color,thickness,transparency)
+    local s=Instance.new("UIStroke")
+    s.Color=color
+    s.Thickness=thickness or 1
+    s.Transparency=transparency or 0
+    s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
+    s.Parent=inst
+    return s
+end
+
+function padding(inst,l,r,t,b)
+    local p=Instance.new("UIPadding")
+    p.PaddingLeft=UDim.new(0,l or 0)
+    p.PaddingRight=UDim.new(0,r or 0)
+    p.PaddingTop=UDim.new(0,t or 0)
+    p.PaddingBottom=UDim.new(0,b or 0)
+    p.Parent=inst
+    return p
+end
+
+function tween(inst,props,speed)
+    TweenService:Create(inst,TweenInfo.new(speed or .15,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),props):Play()
+end
+
+function isPress(input)
+    return input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch
+end
+
+function isMove(input)
+    return input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch
+end
+
+function connect(signal,fn)
+    local c=signal:Connect(fn)
+    table.insert(connections,c)
+    return c
+end
+
+function gconnect(signal,fn)
+    local c=signal:Connect(fn)
+    table.insert(guiConnections,c)
+    return c
+end
+
+function rconnect(signal,fn)
+    local c=signal:Connect(fn)
+    table.insert(refreshConnections,c)
+    return c
+end
+
+local function clearGuiConnections()
+    for _,c in ipairs(guiConnections) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+
+    table.clear(guiConnections)
+end
+
+local function clearRefreshConnections()
+    for _,c in ipairs(refreshConnections) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+
+    table.clear(refreshConnections)
+end
+
+local function disconnectAll()
+    for _,c in ipairs(connections) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+
+    table.clear(connections)
+    clearGuiConnections()
+    clearRefreshConnections()
+
+    for plr,list in pairs(playerConnections) do
+        for _,c in ipairs(list) do
+            pcall(function()
+                c:Disconnect()
+            end)
+        end
+    end
+
+    table.clear(playerConnections)
+end
+
+local function clone(t)
+    if type(t)~="table" then
+        return t
+    end
+
+    local n={}
+
+    for k,v in pairs(t) do
+        n[k]=clone(v)
+    end
+
+    return n
+end
+
+local function merge(a,b)
+    for k,v in pairs(a) do
+        if type(v)=="table" and type(b[k])=="table" then
+            merge(v,b[k])
+        else
+            b[k]=v
+        end
+    end
+end
+
+local function filesAvailable()
+    return type(writefile)=="function"
+        and type(readfile)=="function"
+        and type(isfile)=="function"
+        and type(makefolder)=="function"
+        and type(isfolder)=="function"
+        and type(listfiles)=="function"
+        and type(delfile)=="function"
+end
+
+local folder="ZZZRivalsConfigs"
+
+local function ensureFolder()
+    if not filesAvailable() then
+        return false
+    end
+
+    if not isfolder(folder) then
+        pcall(function()
+            makefolder(folder)
+        end)
+    end
+
+    return isfolder(folder)
+end
+
+local function configPath(name)
+    return folder.."/"..name..".json"
+end
+
+local function getConfigs()
+    local result={}
+
+    if not ensureFolder() then
+        return result
+    end
+
+    local ok,files=pcall(listfiles,folder)
+
+    if not ok or type(files)~="table" then
+        return result
+    end
+
+    for _,path in ipairs(files) do
+        local name=path:match("[^/\\]+$")
+
+        if name then
+            name=name:gsub("%.json$","")
+
+            if name~="" then
+                table.insert(result,name)
+            end
+        end
+    end
+
+    table.sort(result)
+
+    return result
+end
+
+local function saveConfig(name)
+    if not filesAvailable() then
+        return false
+    end
+
+    name=tostring(name or ""):gsub("[^%w_%-%s]","")
+
+    if name=="" then
+        return false
+    end
+
+    if not ensureFolder() then
+        return false
+    end
+
+    local data=clone(CONFIG)
+    data.Config.Name=name
+
+    local ok,result=pcall(function()
+        return HttpService:JSONEncode(data)
+    end)
+
+    if not ok then
+        return false
+    end
+
+    local success=pcall(function()
+        writefile(configPath(name),result)
+    end)
+
+    if success then
+        selectedConfig=name
+        CONFIG.Config.Name=name
+    end
+
+    return success
+end
+
+local function loadConfig(name)
+    if not filesAvailable() or not name or name=="" then
+        return false
+    end
+
+    local path=configPath(name)
+
+    if not isfile(path) then
+        return false
+    end
+
+    local ok,data=pcall(function()
+        return HttpService:JSONDecode(readfile(path))
+    end)
+
+    if not ok or type(data)~="table" then
+        return false
+    end
+
+    if data.Camlock and not data.Silent then
+        data.Silent=data.Camlock
+    end
+
+    if data.Silent then
+        data.Silent.Smoothing=nil
+    end
+
+    local defaults={
+        Silent={
+            Enabled=false,
+            AimPart="Head",
+            AimLead=.5,
+            FOV=300,
+            FOVCheck=true,
+            Orbit=false,
+            OrbitKeybind="V",
+            OrbitHeight=5,
+            OrbitSpeed=.15,
+            OrbitDistance=10
+        },
+        Triggerbot={
+            Enabled=false,
+            Keybind="T",
+            Mode="Hold",
+            Delay=.08,
+            Checks={
+                Forcefield=true,
+                Visible=true,
+                KO=true,
+                Katana=true,
+                Team=true
+            }
+        },
+        Checks={
+            WallCheck=false,
+            KOCheck=false,
+            VisibleCheck=false,
+            TeamCheck=true
+        },
+        Games={
+            ArsenalHitbox=false,
+            Noclip=false,
+            NoclipKeybind="N",
+            CFrameSpeedEnabled=false,
+            CFrameSpeed=0.5,
+            CFrameKeybind="Z",
+            MM2Script=false
+        },
+        Whitelist={
+            Enabled=false,
+            Keybind="P",
+            Users={}
+        },
+        Visuals={
+            HighlightAll=false,
+            TeamCheck=true
+        },
+        Settings={
+            FPSUnlock=true
+        },
+        GUI={
+            HideKeybind="RightShift",
+            Scale=.75
+        },
+        Config={
+            Name=name,
+            Autoload=false
+        }
+    }
+
+    merge(data,defaults)
+
+    CONFIG=defaults
+    CONFIG.Config.Name=name
+    selectedConfig=name
+    target=nil
+    orbitTarget=nil
+
+    return true
+end
+
+local function deleteConfig(name)
+    if not filesAvailable() or not name or name=="" then
+        return false
+    end
+
+    local path=configPath(name)
+
+    if not isfile(path) then
+        return false
+    end
+
+    local ok=pcall(function()
+        delfile(path)
+    end)
+
+    if ok and selectedConfig==name then
+        selectedConfig=""
+    end
+
+    return ok
+end
+
+local function clearAutoloadFlags(exceptName)
+    if not filesAvailable() then
+        return
+    end
+
+    for _,name in ipairs(getConfigs()) do
+        if name~=exceptName then
+            local path=configPath(name)
+
+            if isfile(path) then
+                local ok,data=pcall(function()
+                    return HttpService:JSONDecode(readfile(path))
+                end)
+
+                if ok and type(data)=="table" and data.Config and data.Config.Autoload==true then
+                    data.Config.Autoload=false
+
+                    pcall(function()
+                        writefile(path,HttpService:JSONEncode(data))
+                    end)
+                end
+            end
+        end
+    end
+end
+
+local function resetAutoload()
+    CONFIG.Config.Autoload=false
+
+    if not filesAvailable() then
+        return
+    end
+
+    for _,name in ipairs(getConfigs()) do
+        local path=configPath(name)
+
+        if isfile(path) then
+            local ok,data=pcall(function()
+                return HttpService:JSONDecode(readfile(path))
+            end)
+
+            if ok and type(data)=="table" then
+                if data.Config then
+                    data.Config.Autoload=false
+                end
+
+                pcall(function()
+                    writefile(path,HttpService:JSONEncode(data))
+                end)
+            end
+        end
+    end
+end
+
+local function unloadConfig()
+    target=nil
+    orbitTarget=nil
+    camRun=false
+    orbitRun=false
+    triggerHeld=false
+    CONFIG.Silent.Enabled=false
+    CONFIG.Config.Name=""
+    CONFIG.Config.Autoload=false
+    selectedConfig=""
+end
+
+local function alive(character)
+    if not character then
+        return false
+    end
+
+    local hum=character:FindFirstChildOfClass("Humanoid")
+
+    if not hum then
+        return false
+    end
+
+    return hum.Health>0 and hum:GetState()~=Enum.HumanoidStateType.Dead
+end
+
+local function ko(character)
+    if not character then
+        return true
+    end
+
+    local hum=character:FindFirstChildOfClass("Humanoid")
+
+    if not hum or hum.Health<=0 or hum:GetState()==Enum.HumanoidStateType.Dead then
+        return true
+    end
+
+    local bodyEffects=character:FindFirstChild("BodyEffects")
+
+    if bodyEffects then
+        local knocked=bodyEffects:FindFirstChild("K.O") or bodyEffects:FindFirstChild("KO")
+        local dead=bodyEffects:FindFirstChild("SDeath") or bodyEffects:FindFirstChild("Dead")
+
+        if knocked and knocked:IsA("BoolValue") and knocked.Value then
+            return true
+        end
+
+        if dead and dead:IsA("BoolValue") and dead.Value then
+            return true
+        end
+    end
+
+    local names={"KO","K.O","Knocked","Downed","IsKO","KnockedOut","BeingCarried"}
+
+    for _,name in ipairs(names) do
+        local value=character:FindFirstChild(name,true)
+
+        if value and value:IsA("BoolValue") and value.Value then
+            return true
+        end
+
+        if character:GetAttribute(name)==true then
+            return true
+        end
+    end
+
+    local player=Players:GetPlayerFromCharacter(character)
+
+    if player then
+        for _,name in ipairs(names) do
+            if player:GetAttribute(name)==true then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function katanaName(text)
+    if not text then
+        return false
+    end
+
+    return string.find(string.lower(tostring(text)),"katana",1,true)~=nil
+end
+
+local function scanTools(character,match)
+    if not character then
+        return false
+    end
+
+    local humanoid=character:FindFirstChildOfClass("Humanoid")
+
+    if humanoid then
+        local tool=humanoid:FindFirstChildOfClass("Tool")
+
+        if tool and match(tool.Name) then
+            return true
+        end
+    end
+
+    for _,item in ipairs(character:GetDescendants()) do
+        if item:IsA("Tool") or item:IsA("Model") or item:IsA("BasePart") then
+            if match(item.Name) then
+                return true
+            end
+        elseif item:IsA("StringValue") or item:IsA("ObjectValue") then
+            local value=item:IsA("StringValue") and item.Value or (item.Value and item.Value.Name or "")
+
+            if match(value) then
+                return true
+            end
+        end
+    end
+
+    for name,value in pairs(character:GetAttributes()) do
+        if type(value)=="string" and match(value) then
+            return true
+        end
+
+        if match(name) and value==true then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function hasKatana(character)
+    return scanTools(character,katanaName)
+end
+
+local deathWatch={}
+
+local function watchCharacter(plr,character)
+    if deathWatch[plr] then
+        for _,connection in ipairs(deathWatch[plr]) do
+            connection:Disconnect()
+        end
+    end
+
+    local list={}
+    deathWatch[plr]=list
+
+    local function releaseTarget()
+        if target==plr then
+            target=nil
+            orbitTarget=nil
+            camRun=false
+        end
+    end
+
+    local function watchValue(value)
+        if not value or not value:IsA("BoolValue") then
+            return
+        end
+
+        if value.Value then
+            releaseTarget()
+        end
+
+        table.insert(list,value:GetPropertyChangedSignal("Value"):Connect(function()
+            if value.Value then
+                releaseTarget()
+            end
+        end))
+    end
+
+    if not character then
+        return
+    end
+
+    local hum=character:FindFirstChildOfClass("Humanoid")
+
+    if hum then
+        table.insert(list,hum.Died:Connect(releaseTarget))
+        table.insert(list,hum:GetPropertyChangedSignal("Health"):Connect(function()
+            if hum.Health<=0 then
+                releaseTarget()
+            end
+        end))
+    end
+
+    local bodyEffects=character:FindFirstChild("BodyEffects")
+
+    if bodyEffects then
+        watchValue(bodyEffects:FindFirstChild("K.O") or bodyEffects:FindFirstChild("KO"))
+        watchValue(bodyEffects:FindFirstChild("SDeath") or bodyEffects:FindFirstChild("Dead"))
+        table.insert(list,bodyEffects.ChildAdded:Connect(function(child)
+            if child.Name=="K.O" or child.Name=="KO" or child.Name=="SDeath" or child.Name=="Dead" then
+                watchValue(child)
+            end
+        end))
+    else
+        table.insert(list,character.ChildAdded:Connect(function(child)
+            if child.Name=="BodyEffects" then
+                watchValue(child:FindFirstChild("K.O") or child:FindFirstChild("KO"))
+                watchValue(child:FindFirstChild("SDeath") or child:FindFirstChild("Dead"))
+                table.insert(list,child.ChildAdded:Connect(function(value)
+                    if value.Name=="K.O" or value.Name=="KO" or value.Name=="SDeath" or value.Name=="Dead" then
+                        watchValue(value)
+                    end
+                end))
+            end
+        end))
+    end
+end
+
+for _,plr in ipairs(Players:GetPlayers()) do
+    if plr.Character then
+        watchCharacter(plr,plr.Character)
+    end
+
+    plr.CharacterAdded:Connect(function(character)
+        watchCharacter(plr,character)
+    end)
+end
+
+Players.PlayerAdded:Connect(function(plr)
+    plr.CharacterAdded:Connect(function(character)
+        watchCharacter(plr,character)
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+    if deathWatch[plr] then
+        for _,connection in ipairs(deathWatch[plr]) do
+            connection:Disconnect()
+        end
+        deathWatch[plr]=nil
+    end
+
+    if target==plr then
+        target=nil
+        orbitTarget=nil
+        camRun=false
+    end
+end)
+
+local function findAimPart(character,name)
+    local part=character:FindFirstChild(name)
+
+    if part and part:IsA("BasePart") then
+        return part
+    end
+
+    part=character:FindFirstChild(name,true)
+
+    if part and part:IsA("BasePart") then
+        return part
+    end
+
+    return nil
+end
+
+local function aimPart(character)
+    if not character then
+        return nil
+    end
+
+    local requested=CONFIG.Silent.AimPart
+
+    if requested=="Random" then
+        local cached=randomPartCache[character]
+
+        if cached and cached.Parent==character and os.clock()-(randomPartTime[character] or 0)<.4 then
+            return cached
+        end
+
+        local options={}
+
+        for _,name in ipairs({"HeadHB","Head","UpperTorso","Torso","LowerTorso","HumanoidRootPart"}) do
+            local part=findAimPart(character,name)
+
+            if part then
+                table.insert(options,part)
+            end
+        end
+
+        local picked=character:FindFirstChild("HumanoidRootPart")
+
+        if #options>0 then
+            picked=options[math.random(1,#options)]
+        end
+
+        randomPartCache[character]=picked
+        randomPartTime[character]=os.clock()
+
+        return picked
+    end
+
+    local names={
+        Head={"HeadHB","Head"},
+        Torso={"Torso","UpperTorso","HumanoidRootPart"},
+        UpperTorso={"UpperTorso","Torso","HumanoidRootPart"},
+        LowerTorso={"LowerTorso","HumanoidRootPart","Torso"},
+        Root={"HumanoidRootPart","Torso","UpperTorso"}
+    }
+
+    for _,name in ipairs(names[requested] or names.Head) do
+        local part=findAimPart(character,name)
+
+        if part then
+            return part
+        end
+    end
+
+    return character:FindFirstChild("HumanoidRootPart")
+end
+
+local function isWhitelisted(plr)
+    return plr and CONFIG.Whitelist.Users[tostring(plr.UserId)]==true
+end
+
+local function teamValue(plr)
+    if not plr then
+        return nil
+    end
+
+    local team=plr.Team
+
+    if team then
+        return team
+    end
+
+    local attribute=plr:GetAttribute("Team")
+
+    if attribute==nil then
+        attribute=plr:GetAttribute("team")
+    end
+
+    if attribute==nil then
+        attribute=plr:GetAttribute("TeamName")
+    end
+
+    if attribute==nil then
+        attribute=plr:GetAttribute("TeamId")
+    end
+
+    if attribute~=nil then
+        return attribute
+    end
+
+    local value=plr:FindFirstChild("Team") or plr:FindFirstChild("team")
+
+    if value and value:IsA("StringValue") then
+        return value.Value
+    end
+
+    if value and value:IsA("ObjectValue") and value.Value then
+        return value.Value
+    end
+
+    local character=plr.Character
+
+    if character then
+        local charAttribute=character:GetAttribute("Team")
+
+        if charAttribute~=nil then
+            return charAttribute
+        end
+
+        local charValue=character:FindFirstChild("Team")
+
+        if charValue and charValue:IsA("StringValue") then
+            return charValue.Value
+        end
+    end
+
+    return nil
+end
+
+local function sameTeam(plr)
+    if not plr or plr==LP then
+        return false
+    end
+
+    local mine=teamValue(LP)
+
+    if mine==nil then
+        return false
+    end
+
+    local theirs=teamValue(plr)
+
+    if theirs==nil then
+        return false
+    end
+
+    if typeof(mine)=="Instance" and typeof(theirs)=="Instance" then
+        return mine==theirs
+    end
+
+    return tostring(mine)==tostring(theirs)
+end
+
+local function isEnemy(plr)
+    if not plr or plr==LP then
+        return false
+    end
+
+    if CONFIG.Whitelist.Enabled and not isWhitelisted(plr) then
+        return false
+    end
+
+    if CONFIG.Checks.TeamCheck and sameTeam(plr) then
+        return false
+    end
+
+    return true
+end
+
+local function visible(part,character)
+    if not part or not character or not Camera then
+        return false
+    end
+
+    local origin=Camera.CFrame.Position
+    local direction=part.Position-origin
+
+    local params=RaycastParams.new()
+    params.FilterType=Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances={LP.Character,character}
+    params.IgnoreWater=true
+
+    return workspace:Raycast(origin,direction,params)==nil
+end
+
+local function mousePosition()
+    return UIS:GetMouseLocation()
+end
+
+local function screenCenter()
+    if not Camera then
+        return Vector2.zero
+    end
+
+    return Camera.ViewportSize/2
+end
+
+local function closest()
+    if not Camera then
+        return nil,math.huge
+    end
+
+    local center=screenCenter()
+    local best=nil
+    local bestDistance=math.huge
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if isEnemy(plr) then
+            local character=plr.Character
+
+            if character and alive(character) and (not CONFIG.Checks.KOCheck or not ko(character)) then
+                local part=aimPart(character)
+
+                if part then
+                    local pos,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+                    if onScreen and pos.Z>0 then
+                        local distance=(Vector2.new(pos.X,pos.Y)-center).Magnitude
+
+                        if (not CONFIG.Silent.FOVCheck or distance<=CONFIG.Silent.FOV) and distance<bestDistance then
+                            local allowed=true
+
+                            if CONFIG.Checks.WallCheck or CONFIG.Checks.VisibleCheck then
+                                allowed=visible(part,character)
+                            end
+
+                            if allowed then
+                                best=plr
+                                bestDistance=distance
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return best,bestDistance
+end
+
+local function playerUnderCursor()
+    if not Camera then
+        return nil
+    end
+
+    local mouse=mousePosition()
+    local closestPlayer=nil
+    local closestDistance=90
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LP then
+            local character=plr.Character
+
+            if character then
+                for _,partName in ipairs({"Head","HumanoidRootPart","UpperTorso","Torso","LowerTorso"}) do
+                    local part=character:FindFirstChild(partName)
+
+                    if part and part:IsA("BasePart") then
+                        local pos,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+                        if onScreen and pos.Z>0 then
+                            local distance=(Vector2.new(pos.X,pos.Y)-mouse).Magnitude
+
+                            if distance<closestDistance then
+                                closestPlayer=plr
+                                closestDistance=distance
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+local function silentActive()
+    return CONFIG.Silent.Enabled and silentReady
+end
+
+local function entityList(ignoreTeam)
+    local list={}
+    local tags=CS:GetTagged("Entity")
+
+    local function allow(plr)
+        if not plr or plr==LP then
+            return false
+        end
+
+        if CONFIG.Whitelist.Enabled and not isWhitelisted(plr) then
+            return false
+        end
+
+        if not ignoreTeam and CONFIG.Checks.TeamCheck and sameTeam(plr) then
+            return false
+        end
+
+        return true
+    end
+
+    if #tags>0 then
+        for _,entity in ipairs(tags) do
+            local plr=Players:GetPlayerFromCharacter(entity)
+
+            if allow(plr) then
+                table.insert(list,{plr=plr,character=entity})
+            end
+        end
+    else
+        for _,plr in ipairs(Players:GetPlayers()) do
+            if allow(plr) and plr.Character then
+                table.insert(list,{plr=plr,character=plr.Character})
+            end
+        end
+    end
+
+    return list
+end
+
+local function silentAimPart()
+    if not Camera then
+        return nil
+    end
+
+    local center=screenCenter()
+    local list=entityList(false)
+
+    if #list==0 then
+        list=entityList(true)
+    end
+
+    local best=nil
+    local bestDistance=math.huge
+
+    for _,entry in ipairs(list) do
+        local character=entry.character
+
+        if character and character.Parent and alive(character) and (not CONFIG.Checks.KOCheck or not ko(character)) then
+            local part=aimPart(character)
+
+            if part and part.Parent then
+                local pos,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+                if onScreen and pos.Z>0 then
+                    local distance=(Vector2.new(pos.X,pos.Y)-center).Magnitude
+
+                    if distance<bestDistance then
+                        best=part
+                        bestDistance=distance
+                    end
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+local function leadPoint(part)
+    local pos=part.Position
+    local lead=tonumber(CONFIG.Silent.AimLead) or 0
+
+    if lead<=0 then
+        return pos
+    end
+
+    local vel=part.AssemblyLinearVelocity
+
+    if vel.Magnitude<2 then
+        return pos
+    end
+
+    local ok,ping=pcall(function()
+        return LP:GetNetworkPing()
+    end)
+
+    local t=math.clamp((ok and ping or .08)*.5,0,.15)*lead
+    local offset=vel*t
+
+    if offset.Magnitude>12 then
+        offset=offset.Unit*12
+    end
+
+    return pos+offset
+end
+
+local function acquireShot(origin)
+    local now=os.clock()
+
+    if shotPart and shotPart.Parent and shotPos and shotOrigin and now-shotTime<.12 and (shotOrigin-origin).Magnitude<6 then
+        shotPos=leadPoint(shotPart)
+        shotTime=now
+        return shotPart,shotPos
+    end
+
+    local part=silentAimPart()
+
+    if not part then
+        shotPart=nil
+        shotPos=nil
+        return nil,nil
+    end
+
+    shotPart=part
+    shotPos=leadPoint(part)
+    shotOrigin=origin
+    shotTime=now
+
+    return part,shotPos
+end
+
+local function silentCFD(origin,part,pos)
+    local cf=part.CFrame
+    local data={}
+
+    data[utf8.char(1)]={
+        [utf8.char(0)]=silentUtil:EncodeCFrame(CFrame.lookAt(origin,pos)),
+        [utf8.char(1)]=silentUtil:EncodeCFrame(cf),
+        [utf8.char(2)]=part,
+        [utf8.char(3)]=silentUtil:EncodeCFrame(cf:ToObjectSpace(CFrame.new(pos)))
+    }
+
+    return data
+end
+
+local function setupSilent()
+    if silentReady then
+        return true
+    end
+
+    local ok=pcall(function()
+        local reps=game:GetService("ReplicatedStorage")
+        local U=require(reps.Modules.Utility)
+        local EL=require(reps.Modules.EnumLibrary)
+        local GU=require(reps.Modules.GameplayUtility)
+
+        silentUtil=U
+        silentEnum=EL
+        silentGU=GU
+        silentOriginalRaycast=GU.GetEntitiesFromRaycast
+
+        GU.GetEntitiesFromRaycast=function(self,envID,params,origin,dir,maxDist,...)
+            if silentActive() then
+                local root=LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                local base=root and root.Position or origin
+                local part,pos=acquireShot(base)
+
+                if part and pos then
+                    local delta=pos-base
+
+                    if delta.Magnitude>.05 then
+                        dir=delta.Unit
+                        maxDist=math.max(maxDist,delta.Magnitude+10)
+                    end
+                end
+            end
+
+            return silentOriginalRaycast(self,envID,params,origin,dir,maxDist,...)
+        end
+
+        pcall(function()
+            local gun=require(LP.PlayerScripts.Modules.ItemTypes.Gun)
+
+            if gun and gun.IsFullyAiming then
+                gun.IsFullyAiming=function() return true end
+            end
+        end)
+
+        if type(hookfunction)=="function" and type(newcclosure)=="function" then
+            local remote=reps.Remotes.Replication.Fighter.UseItem
+            local original=remote.FireServer
+            local startShooting=silentEnum:ToEnum("StartShooting")
+
+            local hooked
+            hooked=hookfunction(original,newcclosure(function(self,objID,enumVal,camdata,extra)
+                if silentActive() and enumVal==startShooting then
+                    local root=LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+
+                    if root then
+                        local part,pos=acquireShot(root.Position)
+
+                        if part and pos then
+                            camdata=silentCFD(root.Position,part,pos)
+                        end
+                    end
+                end
+
+                return hooked(self,objID,enumVal,camdata,extra)
+            end))
+
+            silentFireRemote=remote
+            silentFireOriginal=original
+        end
+
+        silentReady=true
+    end)
+
+    return ok and silentReady
+end
+
+local function destroySilent()
+    if silentGU and silentOriginalRaycast then
+        pcall(function()
+            silentGU.GetEntitiesFromRaycast=silentOriginalRaycast
+        end)
+    end
+
+    if silentFireRemote and silentFireOriginal then
+        pcall(function()
+            silentFireRemote.FireServer=silentFireOriginal
+        end)
+    end
+
+    silentReady=false
+    shotPart=nil
+    shotPos=nil
+end
+
+local function triggerTarget()
+    if not Camera then
+        return nil
+    end
+
+    local mouse=mousePosition()
+    local best=nil
+    local bestDistance=60
+    local checks=CONFIG.Triggerbot.Checks
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if isEnemy(plr) and not (checks.Team and sameTeam(plr)) then
+            local character=plr.Character
+
+            if character and alive(character) then
+                if not checks.KO or not ko(character) then
+                    if not checks.Katana or not isRivals() or not hasKatana(character) then
+                        if not checks.Forcefield or not character:FindFirstChildOfClass("ForceField") then
+                            local part=aimPart(character)
+
+                            if part then
+                                local pos,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+                                if onScreen and pos.Z>0 then
+                                    local distance=(Vector2.new(pos.X,pos.Y)-mouse).Magnitude
+
+                                    if distance<bestDistance then
+                                        if not checks.Visible or visible(part,character) then
+                                            best=plr
+                                            bestDistance=distance
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+local function clickMouse()
+    local pos=mousePosition()
+
+    if type(mouse1press)=="function" and type(mouse1release)=="function" then
+        pcall(function()
+            mouse1press()
+            task.wait(.03)
+            mouse1release()
+        end)
+        return
+    end
+
+    pcall(function()
+        VIM:SendMouseButtonEvent(pos.X,pos.Y,0,true,game,0)
+        task.wait(.03)
+        VIM:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0)
+    end)
+end
+
+local function holdLock()
+    if isRivals() and silentReady then
+        return
+    end
+
+    if UIS.MouseDeltaSensitivity~=0 then
+        savedSensitivity=UIS.MouseDeltaSensitivity
+        UIS.MouseDeltaSensitivity=0
+    end
+end
+
+local function lockCamera()
+    if camLocked then
+        holdLock()
+        return
+    end
+
+    camLocked=true
+    aimRotation=nil
+
+    holdLock()
+end
+
+local function unlockCamera()
+    if not camLocked then
+        return
+    end
+
+    camLocked=false
+    aimRotation=nil
+    aimTarget=nil
+
+    if savedSensitivity then
+        UIS.MouseDeltaSensitivity=savedSensitivity
+        savedSensitivity=nil
+    end
+end
+
+local function syncShadow()
+    if UI.Root and UI.Shadow then
+        UI.Shadow.Position=UI.Root.Position+UDim2.fromOffset(4,10)
+    end
+end
+
+local function updateFitScale()
+    local cam=workspace.CurrentCamera
+
+    if not cam or not UI.RootScale or not UI.ShadowScale or not UI.MobileScale then
+        return
+    end
+
+    local vp=cam.ViewportSize
+    local maxScale=isMobile and 1.6 or 1
+    local fit=math.min(maxScale,(vp.X-24)/UI.WinW,(vp.Y-24)/UI.WinH)
+    local s=math.clamp(fit*(tonumber(CONFIG.GUI.Scale) or 1),.3,3)
+
+    UI.RootScale.Scale=s
+    UI.ShadowScale.Scale=s
+    UI.MobileScale.Scale=s
+end
+
+local function setWindowSize(w,h)
+    UI.WinW=math.clamp(w,520,1400)
+    UI.WinH=math.clamp(h,420,1000)
+
+    if UI.Root and UI.Shadow then
+        UI.Root.Size=UDim2.fromOffset(UI.WinW,UI.WinH)
+        UI.Shadow.Size=UDim2.fromOffset(UI.WinW,UI.WinH)
+    end
+
+    updateFitScale()
+end
+
+local function applyVisibility()
+    local hidden=UI.Hidden
+
+    if UI.Root then
+        UI.Root.Visible=not hidden
+    end
+
+    if UI.Shadow then
+        UI.Shadow.Visible=not hidden
+    end
+
+    if UI.FOVFrame then
+        UI.FOVFrame.Visible=CONFIG.Silent.FOVCheck and not hidden
+    end
+end
+
+local function updateFOV()
+    if not UI.FOVFrame or not UI.FOVFrame.Parent then
+        return
+    end
+
+    local center=screenCenter()
+    local fovSize=math.clamp(tonumber(CONFIG.Silent.FOV) or 150,25,900)*2
+
+    UI.FOVFrame.Position=UDim2.fromOffset(center.X,center.Y)
+
+    if UI.LastFOVSize~=fovSize then
+        UI.LastFOVSize=fovSize
+        UI.FOVFrame.Size=UDim2.fromOffset(fovSize,fovSize)
+    end
+
+    UI.FOVFrame.Visible=CONFIG.Silent.FOVCheck and not UI.Hidden
+end
+
+local function buildGui()
+    UI.Built=false
+    UI.LastBuild=os.clock()
+    UI.Hidden=false
+    UI.Minimized=false
+    UI.Dragging=false
+    UI.Resizing=false
+
+    clearGuiConnections()
+
+    if UI.FOVGui then
+        pcall(function()
+            UI.FOVGui:Destroy()
+        end)
+    end
+
+    if UI.GUI then
+        pcall(function()
+            UI.GUI:Destroy()
+        end)
+    end
+
+    navButtons={}
+    UI.Pages={}
+    dirtyPages={}
+    currentCard=nil
+    currentPage=nil
+    configListParent=nil
+    configNameBox=nil
+    UI.LastFOVSize=nil
+
+    local playerGui=LP:WaitForChild("PlayerGui")
+
+    UI.FOVGui=create("ScreenGui",{
+        Name="ZZZRivalsFOV",
+        ResetOnSpawn=false,
+        IgnoreGuiInset=true,
+        DisplayOrder=120,
+        Parent=playerGui
+    })
+
+    UI.FOVFrame=create("Frame",{
+        BackgroundTransparency=1,
+        AnchorPoint=Vector2.new(.5,.5),
+        Size=UDim2.fromOffset(CONFIG.Silent.FOV*2,CONFIG.Silent.FOV*2),
+        Parent=UI.FOVGui
+    })
+
+    corner(UI.FOVFrame,999)
+
+    create("UIStroke",{
+        Thickness=1,
+        Color=COLORS.Accent,
+        Transparency=.55,
+        Parent=UI.FOVFrame
+    })
+
+    UI.GUI=create("ScreenGui",{
+        Name="ZZZRivalsGUI",
+        ResetOnSpawn=false,
+        IgnoreGuiInset=true,
+        DisplayOrder=121,
+        Parent=playerGui
+    })
+
+    UI.Shadow=create("Frame",{
+        Name="Shadow",
+        AnchorPoint=Vector2.new(.5,.5),
+        Position=UDim2.fromScale(.5,.5),
+        Size=UDim2.fromOffset(UI.WinW,UI.WinH),
+        BackgroundColor3=COLORS.Shadow,
+        BackgroundTransparency=.78,
+        BorderSizePixel=0,
+        Parent=UI.GUI
+    })
+
+    corner(UI.Shadow,20)
+
+    UI.ShadowScale=create("UIScale",{
+        Scale=1,
+        Parent=UI.Shadow
+    })
+
+    UI.Root=create("Frame",{
+        Name="Window",
+        AnchorPoint=Vector2.new(.5,.5),
+        Position=UDim2.fromScale(.5,.5),
+        Size=UDim2.fromOffset(UI.WinW,UI.WinH),
+        BackgroundColor3=COLORS.Window,
+        BackgroundTransparency=.06,
+        BorderSizePixel=0,
+        ClipsDescendants=true,
+        Active=true,
+        Parent=UI.GUI
+    })
+
+    corner(UI.Root,18)
+    stroke(UI.Root,COLORS.Border,1,.25)
+
+    UI.RootScale=create("UIScale",{
+        Scale=1,
+        Parent=UI.Root
+    })
+
+    UI.Sidebar=create("Frame",{
+        Name="Sidebar",
+        Size=UDim2.new(0,216,1,0),
+        BackgroundColor3=COLORS.Sidebar,
+        BackgroundTransparency=.18,
+        BorderSizePixel=0,
+        Parent=UI.Root
+    })
+
+    UI.SidebarLine=create("Frame",{
+        Position=UDim2.new(0,216,0,0),
+        Size=UDim2.new(0,1,1,0),
+        BackgroundColor3=COLORS.Border,
+        BackgroundTransparency=.45,
+        BorderSizePixel=0,
+        Parent=UI.Root
+    })
+
+    UI.Brand=create("Frame",{
+        Size=UDim2.new(1,0,0,52),
+        BackgroundTransparency=1,
+        Parent=UI.Sidebar
+    })
+
+    local brandDot=create("Frame",{
+        Position=UDim2.fromOffset(18,22),
+        Size=UDim2.fromOffset(8,8),
+        BackgroundColor3=COLORS.Accent,
+        BorderSizePixel=0,
+        Parent=UI.Brand
+    })
+
+    corner(brandDot,4)
+
+    create("TextLabel",{
+        Position=UDim2.fromOffset(34,0),
+        Size=UDim2.new(1,-46,1,0),
+        BackgroundTransparency=1,
+        Font=Enum.Font.GothamBold,
+        Text="rivals",
+        TextColor3=COLORS.Text,
+        TextSize=17,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        Parent=UI.Brand
+    })
+
+    UI.SearchWrap=create("Frame",{
+        Position=UDim2.fromOffset(14,54),
+        Size=UDim2.new(1,-28,0,32),
+        BackgroundColor3=COLORS.Input,
+        BackgroundTransparency=.3,
+        BorderSizePixel=0,
+        Parent=UI.Sidebar
+    })
+
+    corner(UI.SearchWrap,10)
+    stroke(UI.SearchWrap,COLORS.Border,1,.55)
+    padding(UI.SearchWrap,11,10,0,0)
+
+    UI.SearchBox=create("TextBox",{
+        Size=UDim2.fromScale(1,1),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        PlaceholderText="Search",
+        PlaceholderColor3=COLORS.Muted,
+        Text="",
+        TextColor3=COLORS.Text,
+        TextSize=12,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        ClearTextOnFocus=false,
+        Parent=UI.SearchWrap
+    })
+
+    UI.NavList=create("Frame",{
+        Position=UDim2.fromOffset(14,96),
+        Size=UDim2.new(1,-28,1,-136),
+        BackgroundTransparency=1,
+        Parent=UI.Sidebar
+    })
+
+    create("UIListLayout",{
+        Padding=UDim.new(0,4),
+        SortOrder=Enum.SortOrder.LayoutOrder,
+        Parent=UI.NavList
+    })
+
+    UI.Footer=create("Frame",{
+        Position=UDim2.new(0,0,1,-36),
+        Size=UDim2.new(1,0,0,36),
+        BackgroundTransparency=1,
+        Parent=UI.Sidebar
+    })
+
+    create("TextLabel",{
+        Position=UDim2.fromOffset(18,0),
+        Size=UDim2.fromOffset(60,36),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        Text="niggers",
+        TextColor3=COLORS.Muted,
+        TextSize=11,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        Parent=UI.Footer
+    })
+
+    UI.KeybindChip=create("TextButton",{
+        AnchorPoint=Vector2.new(1,.5),
+        Position=UDim2.new(1,-14,.5,0),
+        Size=UDim2.fromOffset(70,24),
+        BackgroundColor3=COLORS.Input,
+        BackgroundTransparency=.3,
+        BorderSizePixel=0,
+        AutoButtonColor=false,
+        Text="",
+        Parent=UI.Footer
+    })
+
+    corner(UI.KeybindChip,9)
+    stroke(UI.KeybindChip,COLORS.Border,1,.5)
+
+    UI.KeybindLabel=create("TextLabel",{
+        Size=UDim2.fromScale(1,1),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        Text=CONFIG.GUI.HideKeybind,
+        TextColor3=COLORS.Muted,
+        TextSize=11,
+        Parent=UI.KeybindChip
+    })
+
+    UI.Content=create("Frame",{
+        Position=UDim2.new(0,217,0,0),
+        Size=UDim2.new(1,-217,1,0),
+        BackgroundColor3=COLORS.Window,
+        BackgroundTransparency=1,
+        BorderSizePixel=0,
+        Parent=UI.Root
+    })
+
+    UI.Header=create("Frame",{
+        Name="Header",
+        Size=UDim2.new(1,0,0,66),
+        BackgroundTransparency=1,
+        Parent=UI.Content
+    })
+
+    UI.HeaderTitle=create("TextLabel",{
+        Position=UDim2.fromOffset(22,14),
+        Size=UDim2.new(1,-120,0,26),
+        BackgroundTransparency=1,
+        Font=Enum.Font.GothamBold,
+        Text="Combat",
+        TextColor3=COLORS.Text,
+        TextSize=20,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        Parent=UI.Header
+    })
+
+    UI.HeaderSub=create("TextLabel",{
+        Position=UDim2.fromOffset(22,40),
+        Size=UDim2.new(1,-120,0,18),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        Text="",
+        TextColor3=COLORS.Muted,
+        TextSize=12,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        Parent=UI.Header
+    })
+
+    UI.MinBtn=create("TextButton",{
+        Position=UDim2.new(1,-74,0,18),
+        Size=UDim2.fromOffset(26,26),
+        BackgroundColor3=COLORS.Input,
+        BackgroundTransparency=.25,
+        BorderSizePixel=0,
+        AutoButtonColor=false,
+        Font=Enum.Font.GothamBold,
+        Text="-",
+        TextColor3=COLORS.Text,
+        TextSize=16,
+        Parent=UI.Header
+    })
+
+    corner(UI.MinBtn,9)
+    stroke(UI.MinBtn,COLORS.Border,1,.55)
+
+    UI.CloseBtn=create("TextButton",{
+        Position=UDim2.new(1,-42,0,18),
+        Size=UDim2.fromOffset(26,26),
+        BackgroundColor3=COLORS.Input,
+        BackgroundTransparency=.25,
+        BorderSizePixel=0,
+        AutoButtonColor=false,
+        Font=Enum.Font.GothamBold,
+        Text="x",
+        TextColor3=COLORS.Muted,
+        TextSize=13,
+        Parent=UI.Header
+    })
+
+    corner(UI.CloseBtn,9)
+    stroke(UI.CloseBtn,COLORS.Border,1,.55)
+
+    UI.SubTabs=create("Frame",{
+        Position=UDim2.fromOffset(22,68),
+        Size=UDim2.new(1,-44,0,32),
+        BackgroundTransparency=1,
+        ClipsDescendants=false,
+        Parent=UI.Content
+    })
+
+    create("UIListLayout",{
+        FillDirection=Enum.FillDirection.Horizontal,
+        Padding=UDim.new(0,6),
+        SortOrder=Enum.SortOrder.LayoutOrder,
+        Parent=UI.SubTabs
+    })
+
+    UI.Body=create("ScrollingFrame",{
+        Name="Body",
+        Position=UDim2.fromOffset(22,110),
+        Size=UDim2.new(1,-44,1,-124),
+        BackgroundTransparency=1,
+        BorderSizePixel=0,
+        ScrollBarThickness=4,
+        ScrollBarImageColor3=COLORS.Accent,
+        ScrollBarImageTransparency=.35,
+        AutomaticCanvasSize=Enum.AutomaticSize.Y,
+        CanvasSize=UDim2.new(0,0,0,0),
+        Parent=UI.Content
+    })
+
+    create("UIListLayout",{
+        Padding=UDim.new(0,10),
+        SortOrder=Enum.SortOrder.LayoutOrder,
+        Parent=UI.Body
+    })
+
+    UI.Grip=create("TextButton",{
+        AnchorPoint=Vector2.new(1,1),
+        Position=UDim2.new(1,-4,1,-4),
+        Size=UDim2.fromOffset(18,18),
+        BackgroundTransparency=1,
+        Text="",
+        AutoButtonColor=false,
+        Parent=UI.Root
+    })
+
+    create("Frame",{
+        Position=UDim2.fromOffset(6,12),
+        Size=UDim2.fromOffset(10,2),
+        BackgroundColor3=COLORS.Muted,
+        BackgroundTransparency=.35,
+        BorderSizePixel=0,
+        Parent=UI.Grip
+    })
+
+    create("Frame",{
+        Position=UDim2.fromOffset(11,6),
+        Size=UDim2.fromOffset(2,8),
+        BackgroundColor3=COLORS.Muted,
+        BackgroundTransparency=.35,
+        BorderSizePixel=0,
+        Parent=UI.Grip
+    })
+
+    UI.MobileBtn=create("TextButton",{
+        Name="MobileToggle",
+        Size=UDim2.fromOffset(52,52),
+        Position=UDim2.fromOffset(16,16),
+        BackgroundColor3=COLORS.Accent,
+        BorderSizePixel=0,
+        AutoButtonColor=false,
+        Text="",
+        Visible=isMobile,
+        Parent=UI.GUI
+    })
+
+    corner(UI.MobileBtn,26)
+    stroke(UI.MobileBtn,COLORS.Card,1,.35)
+
+    UI.MobileScale=create("UIScale",{
+        Scale=1,
+        Parent=UI.MobileBtn
+    })
+
+    for i=1,3 do
+        create("Frame",{
+            Position=UDim2.fromOffset(15,17+(i-1)*7),
+            Size=UDim2.fromOffset(22,3),
+            BackgroundColor3=Color3.fromRGB(255,255,255),
+            BorderSizePixel=0,
+            Parent=UI.MobileBtn
+        })
+    end
+
+    local navOrder=0
+
+    for _,name in ipairs({"Combat","Checks","Games","Visuals","Whitelist","Avatars","Settings"}) do
+        navOrder=navOrder+1
+
+        local b=create("TextButton",{
+            Name="Nav_"..name,
+            Size=UDim2.new(1,0,0,36),
+            BackgroundColor3=COLORS.NavHover,
+            BackgroundTransparency=1,
+            BorderSizePixel=0,
+            AutoButtonColor=false,
+            Text="",
+            LayoutOrder=navOrder,
+            Parent=UI.NavList
+        })
+
+        corner(b,10)
+
+        local bar=create("Frame",{
+            Position=UDim2.fromOffset(0,10),
+            Size=UDim2.fromOffset(3,16),
+            BackgroundColor3=COLORS.Accent,
+            BorderSizePixel=0,
+            Visible=false,
+            Parent=b
+        })
+
+        corner(bar,2)
+
+        local label=create("TextLabel",{
+            Position=UDim2.fromOffset(16,0),
+            Size=UDim2.new(1,-22,1,0),
+            BackgroundTransparency=1,
+            Font=Enum.Font.Gotham,
+            Text=name,
+            TextColor3=COLORS.Muted,
+            TextSize=13,
+            TextXAlignment=Enum.TextXAlignment.Left,
+            Parent=b
+        })
+
+        navButtons[name]={button=b,bar=bar,label=label}
+
+        gconnect(b.MouseEnter,function()
+            if currentTab~=name then
+                tween(b,{BackgroundTransparency=.35})
+            end
+        end)
+
+        gconnect(b.MouseLeave,function()
+            if currentTab~=name then
+                tween(b,{BackgroundTransparency=1})
+            end
+        end)
+
+        gconnect(b.MouseButton1Click,function()
+            if currentTab==name then
+                return
+            end
+
+            currentTab=name
+            currentSubTab=nil
+            refresh()
+        end)
+    end
+
+    gconnect(UI.SearchBox:GetPropertyChangedSignal("Text"),function()
+        local query=string.lower(UI.SearchBox.Text)
+
+        for name,parts in pairs(navButtons) do
+            parts.button.Visible=query=="" or string.find(string.lower(name),query,1,true)~=nil
+        end
+    end)
+
+    gconnect(UI.Header.InputBegan,function(input)
+        if isPress(input) then
+            UI.Dragging=true
+            UI.DragStart=input.Position
+            UI.StartPos=UI.Root.Position
+        end
+    end)
+
+    gconnect(UI.Grip.InputBegan,function(input)
+        if isPress(input) then
+            UI.Resizing=true
+            UI.ResizeStart=input.Position
+            UI.ResizeSize=Vector2.new(UI.WinW,UI.WinH)
+        end
+    end)
+
+    gconnect(UI.MinBtn.MouseButton1Click,function()
+        UI.Minimized=not UI.Minimized
+
+        if UI.Minimized then
+            UI.Body.Visible=false
+            UI.SubTabs.Visible=false
+            UI.Sidebar.Visible=false
+            UI.SidebarLine.Visible=false
+            UI.Content.Position=UDim2.fromOffset(0,0)
+            UI.Content.Size=UDim2.new(1,0,0,66)
+            UI.Root.Size=UDim2.fromOffset(UI.WinW,66)
+            UI.Shadow.Size=UDim2.fromOffset(UI.WinW,66)
+            UI.MinBtn.Text="+"
+        else
+            UI.Body.Visible=true
+            UI.SubTabs.Visible=true
+            UI.Sidebar.Visible=true
+            UI.SidebarLine.Visible=true
+            UI.Content.Position=UDim2.new(0,217,0,0)
+            UI.Content.Size=UDim2.new(1,-217,1,0)
+            UI.Root.Size=UDim2.fromOffset(UI.WinW,UI.WinH)
+            UI.Shadow.Size=UDim2.fromOffset(UI.WinW,UI.WinH)
+            UI.MinBtn.Text="-"
+        end
+    end)
+
+    gconnect(UI.CloseBtn.MouseButton1Click,function()
+        UI.Hidden=true
+        applyVisibility()
+    end)
+
+    gconnect(UI.MobileBtn.MouseButton1Click,function()
+        UI.Hidden=not UI.Hidden
+        applyVisibility()
+        tween(UI.MobileBtn,{BackgroundColor3=UI.Hidden and COLORS.Muted or COLORS.Accent})
+    end)
+
+    gconnect(UI.KeybindChip.MouseButton1Click,function()
+        waitingHide=true
+        UI.KeybindLabel.Text="Press a key..."
+    end)
+
+    gconnect(UI.KeybindChip.MouseEnter,function()
+        tween(UI.KeybindChip,{BackgroundTransparency=0})
+    end)
+
+    gconnect(UI.KeybindChip.MouseLeave,function()
+        tween(UI.KeybindChip,{BackgroundTransparency=.3})
+    end)
+
+    applyVisibility()
+    updateFitScale()
+
+    UI.Built=true
+end
+
+local subTabCache={parent=nil,tab=nil,buttons={}}
+
+local function buildSubTabs()
+    if not UI.SubTabs then
+        return
+    end
+
+    local list=SUBTABS[currentTab] or {"Main"}
+
+    if not table.find(list,currentSubTab) then
+        currentSubTab=list[1]
+    end
+
+    local same=subTabCache.parent==UI.SubTabs and subTabCache.tab==currentTab and #subTabCache.buttons==#list
+
+    if not same then
+        for _,entry in ipairs(subTabCache.buttons) do
+            if entry.button and entry.button.Parent then
+                entry.button:Destroy()
+            end
+        end
+
+        subTabCache={parent=UI.SubTabs,tab=currentTab,buttons={}}
+
+        for index,name in ipairs(list) do
+            local b=create("TextButton",{
+                Size=UDim2.fromOffset(#name*7+32,30),
+                BackgroundColor3=COLORS.Card,
+                BackgroundTransparency=1,
+                BorderSizePixel=0,
+                AutoButtonColor=false,
+                Text="",
+                LayoutOrder=index,
+                Parent=UI.SubTabs
+            })
+
+            corner(b,10)
+
+            local border=stroke(b,COLORS.Border,1,1)
+
+            local label=create("TextLabel",{
+                Size=UDim2.fromScale(1,1),
+                BackgroundTransparency=1,
+                Font=Enum.Font.Gotham,
+                Text=name,
+                TextColor3=COLORS.Muted,
+                TextSize=13,
+                TextXAlignment=Enum.TextXAlignment.Center,
+                TextYAlignment=Enum.TextYAlignment.Center,
+                Parent=b
+            })
+
+            subTabCache.buttons[index]={button=b,label=label,border=border,name=name}
+
+            gconnect(b.MouseButton1Click,function()
+                if currentSubTab==name then
+                    return
+                end
+
+                currentSubTab=name
+                refresh()
+            end)
+        end
+    end
+
+    for _,entry in ipairs(subTabCache.buttons) do
+        local selected=entry.name==currentSubTab
+
+        entry.button.BackgroundTransparency=selected and .05 or 1
+        entry.label.TextColor3=selected and COLORS.Accent or COLORS.Muted
+        entry.border.Transparency=selected and .2 or 1
+    end
+end
+
+local function section(title,subTab)
+    local parent=currentPage or UI.Body
+
+    if not parent then
+        currentCard=nil
+        return
+    end
+
+    local card=create("Frame",{
+        Name="Section",
+        Size=UDim2.new(1,0,0,0),
+        AutomaticSize=Enum.AutomaticSize.Y,
+        BackgroundColor3=COLORS.Card,
+        BackgroundTransparency=.08,
+        BorderSizePixel=0,
+        Visible=not subTab or currentSubTab==subTab,
+        Parent=parent
+    })
+
+    if subTab then
+        card:SetAttribute("SubTab",subTab)
+    end
+
+    corner(card,14)
+    stroke(card,COLORS.Border,1,.4)
+    padding(card,12,12,11,13)
+
+    create("UIListLayout",{
+        Padding=UDim.new(0,3),
+        SortOrder=Enum.SortOrder.LayoutOrder,
+        Parent=card
+    })
+
+    local header=create("Frame",{
+        Size=UDim2.new(1,0,0,26),
+        BackgroundTransparency=1,
+        LayoutOrder=-1,
+        Parent=card
+    })
+
+    local accentBar=create("Frame",{
+        Position=UDim2.fromOffset(0,7),
+        Size=UDim2.fromOffset(3,12),
+        BackgroundColor3=COLORS.Accent,
+        BorderSizePixel=0,
+        Parent=header
+    })
+
+    corner(accentBar,2)
+
+    create("TextLabel",{
+        Position=UDim2.fromOffset(11,2),
+        Size=UDim2.new(1,-11,0,22),
+        BackgroundTransparency=1,
+        Font=Enum.Font.GothamBold,
+        Text=title,
+        TextColor3=COLORS.Text,
+        TextSize=14,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        Parent=header
+    })
+
+    local cardBody=create("Frame",{
+        Size=UDim2.new(1,0,0,0),
+        AutomaticSize=Enum.AutomaticSize.Y,
+        BackgroundTransparency=1,
+        Parent=card
+    })
+
+    create("UIListLayout",{
+        Padding=UDim.new(0,3),
+        SortOrder=Enum.SortOrder.LayoutOrder,
+        Parent=cardBody
+    })
+
+    currentCard=cardBody
+end
+
+local function rowParent()
+    if currentCard and currentCard.Parent then
+        return currentCard
+    end
+
+    if currentPage and currentPage.Parent then
+        return currentPage
+    end
+
+    return UI.Body
+end
+
+local function rowFrame(height)
+    return create("Frame",{
+        Size=UDim2.new(1,0,0,height or 34),
+        BackgroundTransparency=1,
+        Parent=rowParent()
+    })
+end
+
+local function rowButton(height)
+    local r=create("TextButton",{
+        Size=UDim2.new(1,0,0,height or 34),
+        BackgroundColor3=COLORS.Input,
+        BackgroundTransparency=.45,
+        BorderSizePixel=0,
+        AutoButtonColor=false,
+        Text="",
+        Parent=rowParent()
+    })
+
+    corner(r,10)
+
+    local border=stroke(r,COLORS.Border,1,.5)
+
+    gconnect(r.MouseEnter,function()
+        tween(r,{BackgroundTransparency=.12})
+        tween(border,{Transparency=.12})
+    end)
+
+    gconnect(r.MouseLeave,function()
+        tween(r,{BackgroundTransparency=.45})
+        tween(border,{Transparency=.5})
+    end)
+
+    gconnect(r.MouseButton1Down,function()
+        tween(r,{BackgroundTransparency=0},.08)
+    end)
+
+    gconnect(r.MouseButton1Up,function()
+        tween(r,{BackgroundTransparency=.12},.08)
+    end)
+
+    return r
+end
+
+local function rowLabel(parent,text,rightMargin)
+    return create("TextLabel",{
+        Size=UDim2.new(1,-(rightMargin or 120),1,0),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        Text=text,
+        TextColor3=COLORS.Text,
+        TextSize=13,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        Parent=parent
+    })
+end
+
+local function chip(parent,text,width)
+    local c=create("Frame",{
+        AnchorPoint=Vector2.new(1,.5),
+        Position=UDim2.new(1,0,.5,0),
+        Size=UDim2.fromOffset(width or 60,24),
+        BackgroundColor3=COLORS.Card,
+        BackgroundTransparency=.15,
+        BorderSizePixel=0,
+        Parent=parent
+    })
+
+    corner(c,8)
+    stroke(c,COLORS.Border,1,.45)
+
+    local label=create("TextLabel",{
+        Size=UDim2.fromScale(1,1),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        Text=text,
+        TextColor3=COLORS.Text,
+        TextSize=12,
+        Parent=c
+    })
+
+    return c,label
+end
+
+local function button(text,callback)
+    local r=rowButton()
+
+    local labelText,chipText=text,nil
+    local left,right=text:match("^(.-):%s*(.+)$")
+
+    if left then
+        labelText=left
+        chipText=right
+    end
+
+    local label=rowLabel(r,labelText,chipText and 94 or 16)
+
+    if chipText then
+        chip(r,chipText,76)
+    end
+
+    local handle={
+        row=r,
+        label=label,
+        setLabel=function(value)
+            if label and label.Parent then
+                label.Text=value
+            end
+        end
+    }
+
+    gconnect(r.MouseButton1Click,function()
+        callback(handle)
+    end)
+
+    return handle
+end
+
+local function textbox(placeholder,value,callback)
+    local box=create("TextBox",{
+        Size=UDim2.new(1,0,0,32),
+        BackgroundColor3=COLORS.Input,
+        BackgroundTransparency=.35,
+        BorderSizePixel=0,
+        Font=Enum.Font.Gotham,
+        PlaceholderText=placeholder,
+        PlaceholderColor3=COLORS.Muted,
+        Text=tostring(value or ""),
+        TextColor3=COLORS.Text,
+        TextSize=12,
+        ClearTextOnFocus=false,
+        Parent=rowParent()
+    })
+
+    corner(box,10)
+    padding(box,11,10,0,0)
+
+    local border=stroke(box,COLORS.Border,1,.5)
+
+    gconnect(box.Focused,function()
+        tween(border,{Transparency=0})
+        tween(box,{BackgroundTransparency=.1})
+    end)
+
+    gconnect(box.FocusLost,function()
+        tween(border,{Transparency=.5})
+        tween(box,{BackgroundTransparency=.35})
+        callback(box.Text)
+    end)
+
+    return box
+end
+
+local function toggle(name,value,callback)
+    local r=rowButton()
+    local state=value
+
+    rowLabel(r,name,58)
+
+    local switch=create("Frame",{
+        AnchorPoint=Vector2.new(1,.5),
+        Position=UDim2.new(1,0,.5,0),
+        Size=UDim2.fromOffset(42,22),
+        BackgroundColor3=state and COLORS.Accent or COLORS.SwitchOff,
+        BorderSizePixel=0,
+        Parent=r
+    })
+
+    corner(switch,11)
+
+    local knob=create("Frame",{
+        AnchorPoint=Vector2.new(.5,.5),
+        Position=state and UDim2.new(1,-11,.5,0) or UDim2.new(0,11,.5,0),
+        Size=UDim2.fromOffset(16,16),
+        BackgroundColor3=Color3.fromRGB(255,255,255),
+        BorderSizePixel=0,
+        Parent=switch
+    })
+
+    corner(knob,8)
+    stroke(knob,COLORS.Shadow,1,.7)
+
+    gconnect(r.MouseButton1Click,function()
+        state=not state
+
+        tween(switch,{BackgroundColor3=state and COLORS.Accent or COLORS.SwitchOff})
+        tween(knob,{Position=state and UDim2.new(1,-11,.5,0) or UDim2.new(0,11,.5,0)})
+
+        callback(state)
+    end)
+
+    return r
+end
+
+local function slider(name,value,min,max,callback)
+    local r=rowFrame(50)
+
+    rowLabel(r,name,70)
+
+    local valueLabel=create("TextLabel",{
+        Position=UDim2.new(1,-70,0,0),
+        Size=UDim2.fromOffset(70,22),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        Text=tostring(value),
+        TextColor3=COLORS.Accent,
+        TextSize=13,
+        TextXAlignment=Enum.TextXAlignment.Right,
+        Parent=r
+    })
+
+    local track=create("Frame",{
+        Position=UDim2.fromOffset(0,32),
+        Size=UDim2.new(1,0,0,6),
+        BackgroundColor3=COLORS.Track,
+        BackgroundTransparency=.15,
+        BorderSizePixel=0,
+        Parent=r
+    })
+
+    corner(track,3)
+
+    local fill=create("Frame",{
+        Size=UDim2.new((value-min)/(max-min),0,1,0),
+        BackgroundColor3=COLORS.Accent,
+        BorderSizePixel=0,
+        Parent=track
+    })
+
+    corner(fill,3)
+
+    local knob=create("Frame",{
+        AnchorPoint=Vector2.new(.5,.5),
+        Position=UDim2.new((value-min)/(max-min),0,.5,0),
+        Size=UDim2.fromOffset(14,14),
+        BackgroundColor3=COLORS.Card,
+        BorderSizePixel=0,
+        Parent=track
+    })
+
+    corner(knob,7)
+    stroke(knob,COLORS.Accent,1,.35)
+
+    local dragSlider=false
+
+    local function setFromX(x)
+        local width=track.AbsoluteSize.X
+
+        if width<=0 then
+            return
+        end
+
+        local pct=math.clamp((x-track.AbsolutePosition.X)/width,0,1)
+        local newValue=min+(max-min)*pct
+
+        if max-min<=1 then
+            newValue=math.floor(newValue*100)/100
+        else
+            newValue=math.floor(newValue+.5)
+        end
+
+        fill.Size=UDim2.new(pct,0,1,0)
+        knob.Position=UDim2.new(pct,0,.5,0)
+        valueLabel.Text=tostring(newValue)
+        callback(newValue)
+    end
+
+    gconnect(track.InputBegan,function(input)
+        if isPress(input) then
+            dragSlider=true
+            setFromX(input.Position.X)
+        end
+    end)
+
+    gconnect(UIS.InputChanged,function(input)
+        if dragSlider and isMove(input) then
+            setFromX(input.Position.X)
+        end
+    end)
+
+    gconnect(UIS.InputEnded,function(input)
+        if isPress(input) then
+            dragSlider=false
+        end
+    end)
+
+    return r
+end
+
+local function dropdown(name,current,options,callback)
+    local r=rowFrame()
+
+    rowLabel(r,name,134)
+
+    local box=create("Frame",{
+        AnchorPoint=Vector2.new(1,.5),
+        Position=UDim2.new(1,0,.5,0),
+        Size=UDim2.fromOffset(120,26),
+        BackgroundColor3=COLORS.Input,
+        BackgroundTransparency=.3,
+        BorderSizePixel=0,
+        Parent=r
+    })
+
+    corner(box,9)
+    stroke(box,COLORS.Border,1,.5)
+
+    local currentLabel=create("TextLabel",{
+        Position=UDim2.fromOffset(10,0),
+        Size=UDim2.new(1,-14,1,0),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        Text=current,
+        TextColor3=COLORS.Text,
+        TextSize=12,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        TextTruncate=Enum.TextTruncate.AtEnd,
+        Parent=box
+    })
+
+    local hit=create("TextButton",{
+        Size=UDim2.fromScale(1,1),
+        BackgroundTransparency=1,
+        Text="",
+        Parent=box
+    })
+
+    local opened=false
+    local menu=nil
+
+    local function closeMenu()
+        if menu then
+            menu:Destroy()
+            menu=nil
+        end
+
+        opened=false
+    end
+
+    gconnect(hit.MouseButton1Click,function()
+        if opened then
+            closeMenu()
+            return
+        end
+
+        opened=true
+
+        menu=create("Frame",{
+            Position=UDim2.new(1,-120,0,32),
+            Size=UDim2.fromOffset(120,#options*28),
+            BackgroundColor3=COLORS.Card,
+            BackgroundTransparency=.02,
+            BorderSizePixel=0,
+            ZIndex=100,
+            Parent=r
+        })
+
+        corner(menu,10)
+        stroke(menu,COLORS.Border,1,.2)
+        padding(menu,4,4,4,4)
+
+        create("UIListLayout",{
+            Padding=UDim.new(0,2),
+            Parent=menu
+        })
+
+        for index,option in ipairs(options) do
+            local optionButton=create("TextButton",{
+                Size=UDim2.new(1,0,0,26),
+                BackgroundColor3=option==current and COLORS.AccentDim or COLORS.Card,
+                BackgroundTransparency=option==current and 0 or 1,
+                BorderSizePixel=0,
+                AutoButtonColor=false,
+                Font=Enum.Font.Gotham,
+                Text=option,
+                TextColor3=option==current and COLORS.Accent or COLORS.Text,
+                TextSize=12,
+                TextXAlignment=Enum.TextXAlignment.Left,
+                LayoutOrder=index,
+                ZIndex=101,
+                Parent=menu
+            })
+
+            corner(optionButton,7)
+            padding(optionButton,8,8,0,0)
+
+            gconnect(optionButton.MouseButton1Click,function()
+                currentLabel.Text=option
+                closeMenu()
+                callback(option)
+            end)
+        end
+    end)
+
+    return r
+end
+
+local function multiSelect(name,options,getState,setState)
+    local r=rowFrame()
+
+    rowLabel(r,name,160)
+
+    local box=create("Frame",{
+        AnchorPoint=Vector2.new(1,.5),
+        Position=UDim2.new(1,0,.5,0),
+        Size=UDim2.fromOffset(148,26),
+        BackgroundColor3=COLORS.Input,
+        BackgroundTransparency=.3,
+        BorderSizePixel=0,
+        Parent=r
+    })
+
+    corner(box,9)
+    stroke(box,COLORS.Border,1,.5)
+
+    local currentLabel=create("TextLabel",{
+        Position=UDim2.fromOffset(10,0),
+        Size=UDim2.new(1,-16,1,0),
+        BackgroundTransparency=1,
+        Font=Enum.Font.Gotham,
+        Text="",
+        TextColor3=COLORS.Text,
+        TextSize=12,
+        TextXAlignment=Enum.TextXAlignment.Left,
+        TextTruncate=Enum.TextTruncate.AtEnd,
+        Parent=box
+    })
+
+    local function updateSummary()
+        local parts={}
+
+        for _,option in ipairs(options) do
+            if getState(option.key) then
+                table.insert(parts,option.short)
+            end
+        end
+
+        if #parts==0 then
+            currentLabel.Text="None"
+            currentLabel.TextColor3=COLORS.Muted
+        else
+            currentLabel.Text=table.concat(parts,", ")
+            currentLabel.TextColor3=COLORS.Text
+        end
+    end
+
+    updateSummary()
+
+    local hit=create("TextButton",{
+        Size=UDim2.fromScale(1,1),
+        BackgroundTransparency=1,
+        Text="",
+        Parent=box
+    })
+
+    local opened=false
+    local menu=nil
+
+    local function closeMenu()
+        if menu then
+            menu:Destroy()
+            menu=nil
+        end
+
+        opened=false
+    end
+
+    gconnect(hit.MouseButton1Click,function()
+        if opened then
+            closeMenu()
+            return
+        end
+
+        opened=true
+
+        menu=create("Frame",{
+            Position=UDim2.new(1,-148,0,32),
+            Size=UDim2.fromOffset(148,#options*28+8),
+            BackgroundColor3=COLORS.Card,
+            BackgroundTransparency=.02,
+            BorderSizePixel=0,
+            ZIndex=100,
+            Parent=r
+        })
+
+        corner(menu,10)
+        stroke(menu,COLORS.Border,1,.2)
+        padding(menu,4,4,4,4)
+
+        create("UIListLayout",{
+            Padding=UDim.new(0,2),
+            Parent=menu
+        })
+
+        for index,option in ipairs(options) do
+            local optionButton=create("TextButton",{
+                Size=UDim2.new(1,0,0,26),
+                BackgroundColor3=COLORS.Card,
+                BackgroundTransparency=1,
+                BorderSizePixel=0,
+                AutoButtonColor=false,
+                Font=Enum.Font.Gotham,
+                Text=option.label,
+                TextColor3=COLORS.Text,
+                TextSize=12,
+                TextXAlignment=Enum.TextXAlignment.Left,
+                LayoutOrder=index,
+                ZIndex=101,
+                Parent=menu
+            })
+
+            corner(optionButton,7)
+            padding(optionButton,8,8,0,0)
+
+            local mark=create("TextLabel",{
+                AnchorPoint=Vector2.new(1,.5),
+                Position=UDim2.new(1,-8,.5,0),
+                Size=UDim2.fromOffset(14,14),
+                BackgroundTransparency=1,
+                Font=Enum.Font.GothamBold,
+                Text="",
+                TextColor3=COLORS.Accent,
+                TextSize=13,
+                Parent=optionButton
+            })
+
+            local function paint()
+                local on=getState(option.key)
+
+                optionButton.BackgroundColor3=on and COLORS.AccentDim or COLORS.Card
+                optionButton.BackgroundTransparency=on and 0 or 1
+                optionButton.TextColor3=on and COLORS.Accent or COLORS.Text
+                mark.Text=on and "x" or ""
+            end
+
+            paint()
+
+            gconnect(optionButton.MouseButton1Click,function()
+                setState(option.key,not getState(option.key))
+                paint()
+                updateSummary()
+            end)
+        end
+    end)
+
+    return r
+end
+
+local function setNoclip(enabled)
+    noclipRun=enabled
+
+    if noclipConnection then
+        noclipConnection:Disconnect()
+        noclipConnection=nil
+    end
+
+    if not enabled then
+        for part,oldValue in pairs(originalCollisions) do
+            pcall(function()
+                part.CanCollide=oldValue
+            end)
+            originalCollisions[part]=nil
+        end
+        return
+    end
+
+    noclipConnection=RS.Stepped:Connect(function()
+        local char=LP.Character
+
+        if not char then
+            return
+        end
+
+        for _,part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if originalCollisions[part]==nil then
+                    originalCollisions[part]=part.CanCollide
+                end
+                part.CanCollide=false
+            end
+        end
+    end)
+end
+
+local function setArsenalHitbox(enabled)
+    CONFIG.Games.ArsenalHitbox=enabled
+
+    if not enabled then
+        for part,old in pairs(originalHitboxProperties) do
+            pcall(function()
+                part.Size=old.Size
+                part.Transparency=old.Transparency
+                part.CanCollide=old.CanCollide
+            end)
+            originalHitboxProperties[part]=nil
+        end
+        return
+    end
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LP and plr.Character then
+            for _,partName in ipairs({"RightUpperLeg","LeftUpperLeg","HeadHB","HumanoidRootPart"}) do
+                local part=plr.Character:FindFirstChild(partName)
+
+                if part and part:IsA("BasePart") then
+                    if not originalHitboxProperties[part] then
+                        originalHitboxProperties[part]={Size=part.Size,Transparency=part.Transparency,CanCollide=part.CanCollide}
+                    end
+
+                    part.CanCollide=false
+                    part.Transparency=1
+                    part.Size=Vector3.new(13,13,13)
+                end
+            end
+        end
+    end
+end
+
+local function setFPSUnlock(enabled)
+    CONFIG.Settings.FPSUnlock=enabled
+
+    if type(setfpscap)=="function" then
+        pcall(function()
+            setfpscap(enabled and 9999 or 60)
+        end)
+    end
+end
+
+local function getServers()
+    local ok,result=pcall(function()
+        return game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?limit=100")
+    end)
+
+    if not ok or not result then
+        return {}
+    end
+
+    local okDecode,data=pcall(function()
+        return HttpService:JSONDecode(result)
+    end)
+
+    if okDecode and data and type(data.data)=="table" then
+        return data.data
+    end
+
+    return {}
+end
+
+local function hopTo(serverId)
+    if not serverId or serverId=="" then
+        return
+    end
+
+    pcall(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId,serverId,LP)
+    end)
+end
+
+local function serverHop()
+    local servers=getServers()
+    local candidates={}
+
+    for _,server in ipairs(servers) do
+        if server.id~=game.JobId and server.playing<server.maxPlayers then
+            table.insert(candidates,server)
+        end
+    end
+
+    if #candidates==0 then
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId,LP)
+        end)
+        return
+    end
+
+    hopTo(candidates[math.random(1,#candidates)].id)
+end
+
+local function joinSmallServer()
+    local servers=getServers()
+    local best=nil
+
+    for _,server in ipairs(servers) do
+        if server.id~=game.JobId and server.playing<server.maxPlayers then
+            if not best or server.playing<best.playing then
+                best=server
+            end
+        end
+    end
+
+    if best then
+        hopTo(best.id)
+    else
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId,LP)
+        end)
+    end
+end
+
+local function copyJobId()
+    if type(setclipboard)=="function" then
+        pcall(function()
+            setclipboard(game.JobId)
+        end)
+    elseif type(toClipboard)=="function" then
+        pcall(function()
+            toClipboard(game.JobId)
+        end)
+    end
+end
+
+local function joinJob()
+    if joinJobId and joinJobId~="" then
+        hopTo(joinJobId)
+    end
+end
+
+local function updateServerInfo()
+    if not serverInfoLabel or not serverInfoLabel.Parent then
+        return
+    end
+
+    local ok,ping=pcall(function()
+        return LP:GetNetworkPing()
+    end)
+
+    local ms=ok and math.floor(ping*1000) or 0
+
+    serverInfoLabel.Text="Job ID: "..game.JobId.."\nPlace ID: "..game.PlaceId.."\nPlayers: "..#Players:GetPlayers().."/"..Players.MaxPlayers.."\nPing: "..ms.." ms"
+end
+
+local highlightNext={}
+local highlightFolder=nil
+
+local function ensureHighlightFolder()
+    if highlightFolder and highlightFolder.Parent then
+        return highlightFolder
+    end
+
+    local existing=workspace:FindFirstChild("ZZZHighlights")
+
+    if existing then
+        highlightFolder=existing
+        return highlightFolder
+    end
+
+    highlightFolder=create("Folder",{
+        Name="ZZZHighlights",
+        Parent=workspace
+    })
+
+    return highlightFolder
+end
+
+local function removeHighlight(plr)
+    local h=Highlights[plr]
+
+    if h then
+        pcall(function()
+            h.Adornee=nil
+            h:Destroy()
+        end)
+
+        Highlights[plr]=nil
+    end
+
+    highlightNext[plr]=nil
+end
+
+local function highlightColor(plr)
+    if isWhitelisted(plr) then
+        return COLORS.Whitelist
+    end
+
+    return COLORS.Accent
+end
+
+local function shouldHighlight(plr)
+    if not CONFIG.Visuals.HighlightAll then
+        return false
+    end
+
+    if not plr or plr==LP then
+        return false
+    end
+
+    if not plr.Parent then
+        return false
+    end
+
+    if CONFIG.Visuals.TeamCheck and sameTeam(plr) then
+        return false
+    end
+
+    return plr.Character~=nil
+end
+
+local function updateHighlight(plr)
+    if not shouldHighlight(plr) then
+        removeHighlight(plr)
+        return
+    end
+
+    local character=plr.Character
+
+    if not character or not character.Parent then
+        removeHighlight(plr)
+        return
+    end
+
+    local h=Highlights[plr]
+    local now=os.clock()
+
+    local broken=h==nil
+        or h.Parent==nil
+        or h.Adornee~=character
+        or not character:FindFirstChild("HumanoidRootPart")
+
+    if broken then
+        removeHighlight(plr)
+
+        h=create("Highlight",{
+            Name="ZZZHighlight",
+            DepthMode=Enum.HighlightDepthMode.AlwaysOnTop,
+            FillTransparency=.6,
+            OutlineTransparency=0,
+            Parent=ensureHighlightFolder()
+        })
+
+        Highlights[plr]=h
+        highlightNext[plr]=now+math.random(80,180)/100
+    elseif now>=(highlightNext[plr] or 0) then
+        highlightNext[plr]=now+math.random(80,180)/100
+        h.Adornee=nil
+        h.Adornee=character
+    end
+
+    local color=highlightColor(plr)
+
+    h.Adornee=character
+    h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+    h.FillTransparency=.6
+    h.OutlineTransparency=0
+    h.FillColor=color
+    h.OutlineColor=color
+end
+
+local function updateAllHighlights()
+    if not CONFIG.Visuals.HighlightAll then
+        for plr in pairs(Highlights) do
+            removeHighlight(plr)
+        end
+
+        table.clear(highlightNext)
+
+        if highlightFolder then
+            pcall(function()
+                highlightFolder:Destroy()
+            end)
+
+            highlightFolder=nil
+        end
+
+        return
+    end
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LP then
+            updateHighlight(plr)
+        end
+    end
+end
+
+local function refreshHighlights()
+    if not CONFIG.Visuals.HighlightAll then
+        return
+    end
+
+    ensureHighlightFolder()
+
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LP then
+            updateHighlight(plr)
+        end
+    end
+
+    for plr in pairs(Highlights) do
+        if not plr.Parent then
+            removeHighlight(plr)
+        end
+    end
+end
+
+local function clearHighlights()
+    for plr in pairs(Highlights) do
+        removeHighlight(plr)
+    end
+
+    table.clear(highlightNext)
+
+    if highlightFolder then
+        pcall(function()
+            highlightFolder:Destroy()
+        end)
+
+        highlightFolder=nil
+    end
+end
+
+local mm2Running=false
+
+local function setMM2Script(enabled)
+    CONFIG.Games.MM2Script=enabled
+
+    if not enabled then
+        mm2Running=false
+        return
+    end
+
+    if mm2Running then
+        return
+    end
+
+    mm2Running=true
+
+    task.spawn(function()
+        local ok,err=pcall(function()
+            return loadstring(game:HttpGet(MM2_URL))()
+        end)
+
+        mm2Running=false
+
+        if not ok then
+            warn("mm2 script: "..tostring(err))
+        end
+    end)
+end
+
+local OUTFIT_ONE_HEAD={215718515,1125510,74891470,1029025,7214246280,5891039736}
+local OUTFIT_ONE_TORSO={5084106953,15506874658}
+
+local function restoreOutfitOneCharacter(character)
+    if not character then return end
+
+    local added=outfitOneAdded[character]
+
+    if added then
+        for _,item in ipairs(added) do
+            pcall(function() item:Destroy() end)
+        end
+        outfitOneAdded[character]=nil
+    end
+
+    local state=outfitOneStates[character]
+
+    if not state then return end
+
+    for _,item in ipairs(character:GetChildren()) do
+        if item:IsA("Accessory") then
+            pcall(function() item:Destroy() end)
+        end
+    end
+
+    for _,accessory in ipairs(state.accessories) do
+        pcall(function()
+            accessory.Parent=character
+        end)
+    end
+
+    for object,values in pairs(state.transparency) do
+        if object and object.Parent then
+            pcall(function()
+                object.Transparency=values.Transparency
+                if values.LocalTransparencyModifier~=nil then
+                    object.LocalTransparencyModifier=values.LocalTransparencyModifier
+                end
+            end)
+        end
+    end
+
+    outfitOneStates[character]=nil
+end
+
+local function outfitOneFindAttachment(rootPart,name)
+    for _,object in ipairs(rootPart:GetDescendants()) do
+        if object:IsA("Attachment") and object.Name==name then
+            return object
+        end
+    end
+end
+
+local function outfitOneAddAccessory(assetId,parentPart,character)
+    local ok,objects=pcall(function()
+        return game:GetObjects("rbxassetid://"..tostring(assetId))
+    end)
+
+    if not ok or not objects or not objects[1] then return end
+
+    local accessory=objects[1]
+    local handle=accessory:FindFirstChild("Handle",true)
+
+    if not handle or not handle:IsA("BasePart") then
+        accessory:Destroy()
+        return
+    end
+
+    accessory.Parent=character
+    handle.Anchored=false
+    handle.CanCollide=false
+    handle.Massless=true
+
+    local attachment=handle:FindFirstChildWhichIsA("Attachment")
+
+    if attachment then
+        local parentAttachment=outfitOneFindAttachment(parentPart,attachment.Name)
+
+        if parentAttachment then
+            local weld=Instance.new("Weld")
+            weld.Part0=parentPart
+            weld.Part1=handle
+            weld.C0=parentAttachment.CFrame
+            weld.C1=attachment.CFrame
+            weld.Parent=handle
+        else
+            local weld=Instance.new("Weld")
+            weld.Part0=parentPart
+            weld.Part1=handle
+            weld.C0=CFrame.new(0,0.5,0)
+            weld.C1=CFrame.new()
+            weld.Parent=handle
+        end
+    else
+        local weld=Instance.new("Weld")
+        weld.Part0=parentPart
+        weld.Part1=handle
+        weld.C0=CFrame.new(0,0.5,0)
+        weld.C1=CFrame.new()
+        weld.Parent=handle
+    end
+
+    outfitOneAdded[character]=outfitOneAdded[character] or {}
+    table.insert(outfitOneAdded[character],accessory)
+end
+
+local function applyOutfitOneCharacter(character)
+    if not outfitOneEnabled or not character or not character.Parent then return end
+    if outfitOneStates[character] then return end
+
+    local state={accessories={},transparency={}}
+    outfitOneStates[character]=state
+
+    for _,item in ipairs(character:GetChildren()) do
+        if item:IsA("Accessory") then
+            local ok,copy=pcall(function() return item:Clone() end)
+
+            if ok and copy then
+                table.insert(state.accessories,copy)
+            end
+        end
+    end
+
+    for _,object in ipairs(character:GetDescendants()) do
+        if object:IsA("BasePart") then
+            state.transparency[object]={Transparency=object.Transparency,LocalTransparencyModifier=object.LocalTransparencyModifier}
+        elseif object:IsA("Decal") or object:IsA("Texture") then
+            state.transparency[object]={Transparency=object.Transparency}
+        end
+    end
+
+    for _,item in ipairs(character:GetChildren()) do
+        if item:IsA("Accessory") then item:Destroy() end
+    end
+
+    local head=character:FindFirstChild("Head") or character:WaitForChild("Head",10)
+    local torso=character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+
+    if head then
+        head.Transparency=1
+        head.LocalTransparencyModifier=1
+
+        for _,object in ipairs(head:GetDescendants()) do
+            if object:IsA("Decal") or object:IsA("Texture") then
+                object.Transparency=1
+            elseif object:IsA("BasePart") then
+                object.Transparency=1
+                object.LocalTransparencyModifier=1
+            end
+        end
+
+        for _,assetId in ipairs(OUTFIT_ONE_HEAD) do
+            outfitOneAddAccessory(assetId,head,character)
+        end
+    end
+
+    if torso then
+        for _,assetId in ipairs(OUTFIT_ONE_TORSO) do
+            outfitOneAddAccessory(assetId,torso,character)
+        end
+    end
+end
+
+local function setOutfitOne(enabled)
+    outfitOneEnabled=enabled
+
+    if enabled then
+        if LP.Character then
+            task.spawn(applyOutfitOneCharacter,LP.Character)
+        end
+
+        if not outfitOneCharacterConnection then
+            outfitOneCharacterConnection=LP.CharacterAdded:Connect(function(character)
+                task.wait(0.5)
+
+                if outfitOneEnabled then
+                    task.spawn(applyOutfitOneCharacter,character)
+                end
+            end)
+        end
+    else
+        if outfitOneCharacterConnection then
+            outfitOneCharacterConnection:Disconnect()
+            outfitOneCharacterConnection=nil
+        end
+
+        for character in pairs(outfitOneStates) do
+            restoreOutfitOneCharacter(character)
+        end
+    end
+end
+
+local function refreshConfigList()
+    local parent=configListParent
+
+    if not parent or not parent.Parent then
+        return
+    end
+
+    for _,child in ipairs(parent:GetChildren()) do
+        if child.Name=="ConfigRow" then
+            child:Destroy()
+        end
+    end
+
+    for index,name in ipairs(getConfigs()) do
+        local row=create("Frame",{
+            Name="ConfigRow",
+            Size=UDim2.new(1,0,0,38),
+            BackgroundColor3=name==selectedConfig and COLORS.AccentDim or COLORS.Input,
+            BackgroundTransparency=name==selectedConfig and 0 or .35,
+            BorderSizePixel=0,
+            LayoutOrder=index,
+            Parent=parent
+        })
+
+        corner(row,10)
+        stroke(row,COLORS.Border,1,.5)
+
+        create("TextLabel",{
+            Position=UDim2.fromOffset(11,0),
+            Size=UDim2.new(1,-142,1,0),
+            BackgroundTransparency=1,
+            Font=Enum.Font.Gotham,
+            Text=name,
+            TextColor3=COLORS.Text,
+            TextSize=13,
+            TextXAlignment=Enum.TextXAlignment.Left,
+            TextTruncate=Enum.TextTruncate.AtEnd,
+            Parent=row
+        })
+
+        local load=create("TextButton",{
+            Position=UDim2.new(1,-122,0,6),
+            Size=UDim2.fromOffset(54,26),
+            BackgroundColor3=COLORS.Card,
+            BackgroundTransparency=.1,
+            BorderSizePixel=0,
+            AutoButtonColor=false,
+            Font=Enum.Font.Gotham,
+            Text="Load",
+            TextColor3=COLORS.Accent,
+            TextSize=12,
+            Parent=row
+        })
+
+        corner(load,8)
+        stroke(load,COLORS.Accent,1,.6)
+
+        local del=create("TextButton",{
+            Position=UDim2.new(1,-64,0,6),
+            Size=UDim2.fromOffset(54,26),
+            BackgroundColor3=COLORS.Card,
+            BackgroundTransparency=.1,
+            BorderSizePixel=0,
+            AutoButtonColor=false,
+            Font=Enum.Font.Gotham,
+            Text="Delete",
+            TextColor3=COLORS.Muted,
+            TextSize=12,
+            Parent=row
+        })
+
+        corner(del,8)
+        stroke(del,COLORS.Border,1,.5)
+
+        gconnect(load.MouseButton1Click,function()
+            if loadConfig(name) and applyLoadedConfig then
+                applyLoadedConfig()
+            end
+
+            dirtyPages.Settings=true
+            refresh()
+        end)
+
+        gconnect(del.MouseButton1Click,function()
+            deleteConfig(name)
+
+            if row.Parent then
+                row:Destroy()
+            end
+
+            refreshConfigList()
+        end)
+    end
+end
+
+local function spectatePlayer(plr)
+    if not plr or plr==LP then
+        return false
+    end
+
+    local character=plr.Character
+    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+
+    if not humanoid or humanoid.Health<=0 then
+        return false
+    end
+
+    Camera=workspace.CurrentCamera
+
+    if not Camera then
+        return false
+    end
+
+    unlockCamera()
+    selectedSpectateTarget=plr
+    isSpectating=true
+    camRun=false
+    target=nil
+    orbitTarget=nil
+    Camera.CameraType=Enum.CameraType.Custom
+    Camera.CameraSubject=humanoid
+
+    return true
+end
+
+local function unspectatePlayer()
+    isSpectating=false
+    selectedSpectateTarget=nil
+    Camera=workspace.CurrentCamera
+
+    local character=LP.Character
+    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+
+    if Camera and humanoid then
+        Camera.CameraType=Enum.CameraType.Custom
+        Camera.CameraSubject=humanoid
+    end
+end
+
+local function teleportToSpectateTarget()
+    local plr=selectedSpectateTarget
+    local character=plr and plr.Character
+    local targetRoot=character and character:FindFirstChild("HumanoidRootPart")
+    local ownCharacter=LP.Character
+    local ownRoot=ownCharacter and ownCharacter:FindFirstChild("HumanoidRootPart")
+
+    if targetRoot and ownRoot then
+        ownRoot.CFrame=targetRoot.CFrame*CFrame.new(0,3,0)
+    end
+end
+
+local function updateNav()
+    for name,parts in pairs(navButtons) do
+        if parts.button and parts.button.Parent then
+            local selected=name==currentTab
+
+            parts.button.BackgroundColor3=selected and COLORS.NavActive or COLORS.NavHover
+            parts.button.BackgroundTransparency=selected and 0 or 1
+            parts.bar.Visible=selected
+            parts.label.TextColor3=selected and COLORS.Text or COLORS.Muted
+        end
+    end
+end
+
+local function applyFilter()
+    local page=UI.Pages[currentTab]
+
+    if not page or not page.Parent then
+        return
+    end
+
+    for _,card in ipairs(page:GetChildren()) do
+        if card:IsA("Frame") and card.Name=="Section" then
+            local sub=card:GetAttribute("SubTab")
+
+            card.Visible=sub==nil or sub==currentSubTab
+        end
+    end
+end
+
+local function buildTabContent(tab)
+    if tab=="Combat" then
+        section("Silent Aim","Aim")
+
+        toggle("Silent Aim",CONFIG.Silent.Enabled,function(v)
+            CONFIG.Silent.Enabled=v
+            camRun=v
+            target=nil
+            orbitTarget=nil
+
+            if v then
+                task.spawn(setupSilent)
+
+                task.spawn(function()
+                    target=closest()
+                end)
+            end
+        end)
+
+        dropdown("Aim Part",CONFIG.Silent.AimPart,AIM_PARTS,function(v)
+            CONFIG.Silent.AimPart=v
+            orbitTarget=nil
+            table.clear(randomPartCache)
+            table.clear(randomPartTime)
+        end)
+
+        slider("Lead (Ping)",CONFIG.Silent.AimLead,0,1,function(v)
+            CONFIG.Silent.AimLead=v
+        end)
+
+        section("Field of View","Field of View")
+
+        slider("FOV",CONFIG.Silent.FOV,25,900,function(v)
+            CONFIG.Silent.FOV=v
+        end)
+
+        toggle("FOV Check",CONFIG.Silent.FOVCheck,function(v)
+            CONFIG.Silent.FOVCheck=v
+        end)
+
+        section("Orbit","Orbit")
+
+        toggle("Target Orbit",CONFIG.Silent.Orbit,function(v)
+            CONFIG.Silent.Orbit=v
+            orbitRun=v
+            orbitTarget=nil
+
+            if v then
+                if not CONFIG.Silent.Enabled then
+                    CONFIG.Silent.Enabled=true
+                    camRun=true
+                    task.spawn(setupSilent)
+                end
+
+                target=closest()
+            end
+        end)
+
+        button("Orbit Keybind: "..CONFIG.Silent.OrbitKeybind,function(handle)
+            waitingOrbit=true
+            handle.setLabel("Press a key...")
+        end)
+
+        slider("Orbit Height",CONFIG.Silent.OrbitHeight,0,20,function(v)
+            CONFIG.Silent.OrbitHeight=v
+        end)
+
+        slider("Orbit Distance",CONFIG.Silent.OrbitDistance,5,25,function(v)
+            CONFIG.Silent.OrbitDistance=v
+        end)
+
+        slider("Speed Scale",CONFIG.Silent.OrbitSpeed,0,1,function(v)
+            CONFIG.Silent.OrbitSpeed=v
+        end)
+
+        section("Triggerbot","Triggerbot")
+
+        toggle("Triggerbot",CONFIG.Triggerbot.Enabled,function(v)
+            CONFIG.Triggerbot.Enabled=v
+            triggerHeld=false
+            triggerTimer=0
+        end)
+
+        button("Keybind: "..CONFIG.Triggerbot.Keybind,function(handle)
+            waitingTrigger=true
+            handle.setLabel("Press a key...")
+        end)
+
+        dropdown("Mode",CONFIG.Triggerbot.Mode,{"Hold","Toggle"},function(v)
+            CONFIG.Triggerbot.Mode=v
+            triggerHeld=false
+            triggerTimer=0
+        end)
+
+        local triggerOptions={}
+
+        for _,option in ipairs(TRIGGER_CHECKS) do
+            if option.key~="Katana" or isRivals() then
+                table.insert(triggerOptions,option)
+            end
+        end
+
+        multiSelect("Checks",triggerOptions,function(key)
+            return CONFIG.Triggerbot.Checks[key]==true
+        end,function(key,value)
+            CONFIG.Triggerbot.Checks[key]=value
+        end)
+
+        slider("Delay",CONFIG.Triggerbot.Delay,0,.5,function(v)
+            CONFIG.Triggerbot.Delay=v
+        end)
+
+    elseif tab=="Checks" then
+        section("Filters","Filters")
+
+        toggle("Wall Check",CONFIG.Checks.WallCheck,function(v)
+            CONFIG.Checks.WallCheck=v
+        end)
+
+        toggle("Visible Check",CONFIG.Checks.VisibleCheck,function(v)
+            CONFIG.Checks.VisibleCheck=v
+        end)
+
+        toggle("KO Check",CONFIG.Checks.KOCheck,function(v)
+            CONFIG.Checks.KOCheck=v
+        end)
+
+        toggle("Team Check",CONFIG.Checks.TeamCheck,function(v)
+            CONFIG.Checks.TeamCheck=v
+            target=nil
+            orbitTarget=nil
+            updateAllHighlights()
+        end)
+
+    elseif tab=="Games" then
+        section("Game Cheats","Cheats")
+
+        toggle("Arsenal Hitbox Expander",CONFIG.Games.ArsenalHitbox,function(v)
+            setArsenalHitbox(v)
+        end)
+
+        toggle("MM2 Script",CONFIG.Games.MM2Script,function(v)
+            setMM2Script(v)
+        end)
+
+        toggle("Noclip",CONFIG.Games.Noclip,function(v)
+            CONFIG.Games.Noclip=v
+            setNoclip(v)
+        end)
+
+        button("Noclip Keybind: "..CONFIG.Games.NoclipKeybind,function(handle)
+            waitingNoclip=true
+            handle.setLabel("Press a key...")
+        end)
+
+        section("Movement","Movement")
+
+        toggle("CFrame Speed",CONFIG.Games.CFrameSpeedEnabled,function(v)
+            CONFIG.Games.CFrameSpeedEnabled=v
+            cframeRun=v
+        end)
+
+        slider("Speed Amount",CONFIG.Games.CFrameSpeed,0,5,function(v)
+            CONFIG.Games.CFrameSpeed=v
+        end)
+
+        button("CFrame Speed Keybind: "..CONFIG.Games.CFrameKeybind,function(handle)
+            waitingCFrame=true
+            handle.setLabel("Press a key...")
+        end)
+
+    elseif tab=="Visuals" then
+        section("Chams","Chams")
+
+        toggle("Highlight All",CONFIG.Visuals.HighlightAll,function(v)
+            CONFIG.Visuals.HighlightAll=v
+
+            if v then
+                updateAllHighlights()
+            else
+                clearHighlights()
+            end
+        end)
+
+        toggle("Team Check",CONFIG.Visuals.TeamCheck,function(v)
+            CONFIG.Visuals.TeamCheck=v
+            updateAllHighlights()
+        end)
+
+        section("Spectate","Spectate")
+
+        local searchBox=create("TextBox",{
+            Size=UDim2.new(1,0,0,32),
+            BackgroundColor3=COLORS.Input,
+            BackgroundTransparency=.35,
+            BorderSizePixel=0,
+            Font=Enum.Font.Gotham,
+            PlaceholderText="Search players...",
+            PlaceholderColor3=COLORS.Muted,
+            Text=spectateSearch,
+            TextColor3=COLORS.Text,
+            TextSize=12,
+            ClearTextOnFocus=false,
+            Parent=rowParent()
+        })
+
+        corner(searchBox,10)
+        padding(searchBox,11,10,0,0)
+        stroke(searchBox,COLORS.Border,1,.5)
+
+        local playerList=create("ScrollingFrame",{
+            Size=UDim2.new(1,0,0,150),
+            BackgroundColor3=COLORS.Input,
+            BackgroundTransparency=.55,
+            BorderSizePixel=0,
+            ScrollBarThickness=4,
+            ScrollBarImageColor3=COLORS.Accent,
+            ScrollBarImageTransparency=.35,
+            AutomaticCanvasSize=Enum.AutomaticSize.Y,
+            CanvasSize=UDim2.new(0,0,0,0),
+            Visible=false,
+            Parent=rowParent()
+        })
+
+        corner(playerList,10)
+        stroke(playerList,COLORS.Border,1,.5)
+        padding(playerList,5,5,5,5)
+
+        create("UIListLayout",{
+            Padding=UDim.new(0,3),
+            SortOrder=Enum.SortOrder.Name,
+            Parent=playerList
+        })
+
+        local function rebuildSpectatePlayers()
+            for _,child in ipairs(playerList:GetChildren()) do
+                if child:IsA("TextButton") or child:IsA("TextLabel") then
+                    child:Destroy()
+                end
+            end
+
+            local filter=string.lower(spectateSearch or "")
+            local count=0
+
+            for _,plr in ipairs(Players:GetPlayers()) do
+                if plr~=LP and (filter=="" or string.find(string.lower(plr.Name),filter,1,true) or string.find(string.lower(plr.DisplayName),filter,1,true)) then
+                    count=count+1
+
+                    local row=create("TextButton",{
+                        Name="Player_"..plr.UserId,
+                        Size=UDim2.new(1,-4,0,28),
+                        BackgroundColor3=plr==selectedSpectateTarget and COLORS.AccentDim or COLORS.Card,
+                        BackgroundTransparency=plr==selectedSpectateTarget and 0 or .3,
+                        BorderSizePixel=0,
+                        AutoButtonColor=false,
+                        Font=Enum.Font.Gotham,
+                        Text=plr.DisplayName==plr.Name and plr.Name or (plr.DisplayName.."  (@"..plr.Name..")"),
+                        TextColor3=plr==selectedSpectateTarget and COLORS.Accent or COLORS.Text,
+                        TextSize=12,
+                        TextXAlignment=Enum.TextXAlignment.Left,
+                        TextTruncate=Enum.TextTruncate.AtEnd,
+                        Parent=playerList
+                    })
+
+                    corner(row,8)
+                    padding(row,9,8,0,0)
+
+                    gconnect(row.MouseButton1Click,function()
+                        selectedSpectateTarget=plr
+                        spectatePlayer(plr)
+                        playerList.Visible=false
+                        dirtyPages.Visuals=true
+                        refresh()
+                    end)
+                end
+            end
+
+            if count==0 then
+                create("TextLabel",{
+                    Size=UDim2.new(1,-4,0,28),
+                    BackgroundTransparency=1,
+                    Font=Enum.Font.Gotham,
+                    Text=filter=="" and "No other players" or "No matching players",
+                    TextColor3=COLORS.Muted,
+                    TextSize=12,
+                    Parent=playerList
+                })
+            end
+        end
+
+        gconnect(searchBox.Focused,function()
+            playerList.Visible=true
+            rebuildSpectatePlayers()
+        end)
+
+        gconnect(searchBox:GetPropertyChangedSignal("Text"),function()
+            spectateSearch=searchBox.Text
+
+            if playerList.Visible then
+                rebuildSpectatePlayers()
+            end
+        end)
+
+        gconnect(searchBox.FocusLost,function()
+            spectateSearch=searchBox.Text
+        end)
+
+        button("Spectate Selected",function()
+            if selectedSpectateTarget and spectatePlayer(selectedSpectateTarget) then
+                dirtyPages.Visuals=true
+                refresh()
+            end
+        end)
+
+        button("Teleport To Selected",function()
+            teleportToSpectateTarget()
+        end)
+
+        button("Unspectate",function()
+            unspectatePlayer()
+            dirtyPages.Visuals=true
+            refresh()
+        end)
+
+    elseif tab=="Avatars" then
+        section("Outfits","Outfits")
+
+        toggle("Outfit One",outfitOneEnabled,function(v)
+            setOutfitOne(v)
+        end)
+
+    elseif tab=="Whitelist" then
+        section("Whitelist","Players")
+
+        toggle("Whitelist Mode",CONFIG.Whitelist.Enabled,function(v)
+            CONFIG.Whitelist.Enabled=v
+
+            if CONFIG.Silent.Enabled then
+                target=nil
+                orbitTarget=nil
+            end
+
+            updateAllHighlights()
+        end)
+
+        button("Keybind: "..CONFIG.Whitelist.Keybind,function(handle)
+            waitingWhitelist=true
+            handle.setLabel("Press a key...")
+        end)
+
+        button("Clear Whitelist",function()
+            table.clear(CONFIG.Whitelist.Users)
+            updateAllHighlights()
+            dirtyPages.Whitelist=true
+            refresh()
+        end)
+
+        section("Whitelisted Players","Players")
+
+        local found=false
+
+        for _,plr in ipairs(Players:GetPlayers()) do
+            if plr~=LP and isWhitelisted(plr) then
+                found=true
+
+                button(plr.Name,function()
+                    CONFIG.Whitelist.Users[tostring(plr.UserId)]=nil
+                    updateHighlight(plr)
+                    dirtyPages.Whitelist=true
+                    refresh()
+                end)
+            end
+        end
+
+        if not found then
+            create("TextLabel",{
+                Size=UDim2.new(1,0,0,30),
+                BackgroundTransparency=1,
+                Font=Enum.Font.Gotham,
+                Text="No whitelisted players",
+                TextColor3=COLORS.Muted,
+                TextSize=13,
+                Parent=rowParent()
+            })
+        end
+
+    elseif tab=="Settings" then
+        section("Server","Server")
+
+        serverInfoLabel=create("TextLabel",{
+            Size=UDim2.new(1,0,0,64),
+            BackgroundColor3=COLORS.Input,
+            BackgroundTransparency=.5,
+            BorderSizePixel=0,
+            Font=Enum.Font.Code,
+            Text="",
+            TextColor3=COLORS.Text,
+            TextSize=12,
+            TextXAlignment=Enum.TextXAlignment.Left,
+            TextYAlignment=Enum.TextYAlignment.Top,
+            Parent=rowParent()
+        })
+
+        corner(serverInfoLabel,10)
+        stroke(serverInfoLabel,COLORS.Border,1,.5)
+        padding(serverInfoLabel,11,10,8,0)
+
+        updateServerInfo()
+
+        button("Server Hop",function()
+            serverHop()
+        end)
+
+        button("Join Small Server",function()
+            joinSmallServer()
+        end)
+
+        button("Copy Job ID",function(handle)
+            copyJobId()
+            handle.setLabel("Copied!")
+        end)
+
+        textbox("Job ID",joinJobId,function(v)
+            joinJobId=v
+        end)
+
+        button("Join Job ID",function()
+            joinJob()
+        end)
+
+        section("Performance","Performance")
+
+        toggle("FPS Unlocker 9999",CONFIG.Settings.FPSUnlock,function(v)
+            setFPSUnlock(v)
+        end)
+
+        section("Interface","Interface")
+
+        slider("GUI Size",CONFIG.GUI.Scale*100,50,200,function(v)
+            CONFIG.GUI.Scale=v/100
+            updateFitScale()
+        end)
+
+        button("Hide GUI Keybind: "..CONFIG.GUI.HideKeybind,function(handle)
+            waitingHide=true
+            handle.setLabel("Press a key...")
+        end)
+
+        button("Reset Size",function()
+            CONFIG.GUI.Scale=1
+            updateFitScale()
+            dirtyPages.Settings=true
+            refresh()
+        end)
+
+        button("Unload Everything",function()
+            target=nil
+            orbitTarget=nil
+            camRun=false
+            orbitRun=false
+            noclipRun=false
+            cframeRun=false
+            triggerHeld=false
+            unlockCamera()
+            destroySilent()
+            pcall(function()
+                RS:UnbindFromRenderStep("ZZZOrbitCamera")
+            end)
+            unspectatePlayer()
+            setOutfitOne(false)
+            setNoclip(false)
+            setArsenalHitbox(false)
+            setMM2Script(false)
+            clearHighlights()
+            disconnectAll()
+
+            if UI.FOVGui then
+                UI.FOVGui:Destroy()
+            end
+
+            if UI.GUI then
+                UI.GUI:Destroy()
+            end
+        end)
+
+        section("Configs","Configs")
+
+        configNameBox=textbox("Config Name",CONFIG.Config.Name,function(v)
+            CONFIG.Config.Name=v
+        end)
+
+        button("Save Config",function()
+            local name=CONFIG.Config.Name
+
+            if configNameBox and configNameBox.Parent then
+                name=configNameBox.Text
+            end
+
+            name=tostring(name or ""):gsub("^%s+",""):gsub("%s+$","")
+
+            if name=="" then
+                return
+            end
+
+            CONFIG.Config.Name=name
+            saveConfig(name)
+            dirtyPages.Settings=true
+            refresh()
+        end)
+
+        button("Unload Config",function()
+            unloadConfig()
+            dirtyPages.Settings=true
+            refresh()
+        end)
+
+        toggle("Autoload Config",CONFIG.Config.Autoload,function(v)
+            CONFIG.Config.Autoload=v
+
+            if v then
+                clearAutoloadFlags(CONFIG.Config.Name)
+
+                if CONFIG.Config.Name~="" then
+                    saveConfig(CONFIG.Config.Name)
+                end
+            end
+        end)
+
+        toggle("Reset Autoload",false,function()
+            resetAutoload()
+            dirtyPages.Settings=true
+            refresh()
+        end)
+
+        section("Saved Configs","Configs")
+        configListParent=currentCard
+        refreshConfigList()
+    end
+end
+
+local function buildPage(tab)
+    local page=UI.Pages[tab]
+
+    if page and page.Parent then
+        for _,child in ipairs(page:GetChildren()) do
+            if not child:IsA("UIListLayout") then
+                child:Destroy()
+            end
+        end
+    else
+        page=create("Frame",{
+            Name="Page_"..tab,
+            Size=UDim2.new(1,0,0,0),
+            AutomaticSize=Enum.AutomaticSize.Y,
+            BackgroundTransparency=1,
+            Parent=UI.Body
+        })
+
+        create("UIListLayout",{
+            Padding=UDim.new(0,10),
+            SortOrder=Enum.SortOrder.LayoutOrder,
+            Parent=page
+        })
+
+        UI.Pages[tab]=page
+    end
+
+    currentPage=page
+    currentCard=nil
+    buildTabContent(tab)
+    currentPage=nil
+    currentCard=nil
+end
+
+function refresh()
+    buildSubTabs()
+
+    if not UI.Body or not UI.HeaderTitle or not UI.KeybindLabel then
+        return
+    end
+
+    UI.HeaderTitle.Text=currentTab
+    UI.HeaderSub.Text=TAB_SUBTITLES[currentTab] or ""
+    UI.KeybindLabel.Text=CONFIG.GUI.HideKeybind
+
+    local page=UI.Pages[currentTab]
+
+    if not page or not page.Parent or dirtyPages[currentTab] then
+        dirtyPages[currentTab]=false
+        buildPage(currentTab)
+    end
+
+    for name,other in pairs(UI.Pages) do
+        if other and other.Parent then
+            other.Visible=name==currentTab
+        end
+    end
+
+    applyFilter()
+    updateNav()
+end
+
+connect(UIS.InputBegan,function(input)
+    if input.UserInputType~=Enum.UserInputType.Keyboard then
+        return
+    end
+
+    local key=input.KeyCode
+
+    if key==Enum.KeyCode.Unknown then
+        return
+    end
+
+    local name=key.Name
+
+    if waitingTrigger then
+        CONFIG.Triggerbot.Keybind=name
+        waitingTrigger=false
+        triggerHeld=false
+        dirtyPages.Combat=true
+        refresh()
+        return
+    end
+
+    if waitingOrbit then
+        CONFIG.Silent.OrbitKeybind=name
+        waitingOrbit=false
+        dirtyPages.Combat=true
+        refresh()
+        return
+    end
+
+    if waitingHide then
+        CONFIG.GUI.HideKeybind=name
+        waitingHide=false
+        UI.Hidden=false
+        applyVisibility()
+        dirtyPages.Settings=true
+        refresh()
+        return
+    end
+
+    if waitingWhitelist then
+        CONFIG.Whitelist.Keybind=name
+        waitingWhitelist=false
+        dirtyPages.Whitelist=true
+        refresh()
+        return
+    end
+
+    if waitingNoclip then
+        CONFIG.Games.NoclipKeybind=name
+        waitingNoclip=false
+        dirtyPages.Games=true
+        refresh()
+        return
+    end
+
+    if waitingCFrame then
+        CONFIG.Games.CFrameKeybind=name
+        waitingCFrame=false
+        dirtyPages.Games=true
+        refresh()
+        return
+    end
+
+    if name==CONFIG.GUI.HideKeybind then
+        UI.Hidden=not UI.Hidden
+        applyVisibility()
+        return
+    end
+
+    if name==CONFIG.Triggerbot.Keybind then
+        if not CONFIG.Triggerbot.Enabled then
+            return
+        end
+
+        triggerTimer=0
+
+        if CONFIG.Triggerbot.Mode=="Toggle" then
+            triggerHeld=not triggerHeld
+        else
+            triggerHeld=true
+        end
+
+        return
+    end
+
+    if name==CONFIG.Games.NoclipKeybind then
+        if not CONFIG.Games.Noclip then
+            return
+        end
+
+        setNoclip(not noclipRun)
+        return
+    end
+
+    if name==CONFIG.Games.CFrameKeybind then
+        if not CONFIG.Games.CFrameSpeedEnabled then
+            return
+        end
+
+        cframeRun=not cframeRun
+        return
+    end
+
+    if name==CONFIG.Whitelist.Keybind then
+        local plr=playerUnderCursor()
+
+        if plr then
+            local id=tostring(plr.UserId)
+
+            if CONFIG.Whitelist.Users[id] then
+                CONFIG.Whitelist.Users[id]=nil
+            else
+                CONFIG.Whitelist.Users[id]=true
+            end
+
+            updateHighlight(plr)
+            dirtyPages.Whitelist=true
+
+            if currentTab=="Whitelist" then
+                refresh()
+            end
+        end
+
+        return
+    end
+
+    if name==CONFIG.Silent.OrbitKeybind then
+        if not CONFIG.Silent.Orbit then
+            return
+        end
+
+        orbitRun=not orbitRun
+        orbitTarget=nil
+
+        if orbitRun then
+            if not CONFIG.Silent.Enabled then
+                CONFIG.Silent.Enabled=true
+                task.spawn(setupSilent)
+            end
+
+            camRun=true
+            target=closest()
+        end
+
+        return
+    end
+end)
+
+connect(UIS.InputChanged,function(input)
+    if UI.Dragging and isMove(input) and UI.Root and UI.StartPos then
+        local delta=input.Position-UI.DragStart
+
+        UI.Root.Position=UDim2.new(
+            UI.StartPos.X.Scale,
+            UI.StartPos.X.Offset+delta.X,
+            UI.StartPos.Y.Scale,
+            UI.StartPos.Y.Offset+delta.Y
+        )
+
+        syncShadow()
+    elseif UI.Resizing and isMove(input) and UI.RootScale and UI.ResizeStart then
+        local scale=UI.RootScale.Scale
+
+        if scale>0 then
+            local delta=input.Position-UI.ResizeStart
+
+            setWindowSize(UI.ResizeSize.X+delta.X/scale,UI.ResizeSize.Y+delta.Y/scale)
+        end
+    end
+end)
+
+connect(UIS.InputEnded,function(input)
+    if isPress(input) then
+        UI.Dragging=false
+        UI.Resizing=false
+    end
+
+    if input.UserInputType==Enum.UserInputType.Keyboard and input.KeyCode.Name==CONFIG.Triggerbot.Keybind then
+        if CONFIG.Triggerbot.Mode~="Toggle" then
+            triggerHeld=false
+        end
+
+        triggerTimer=0
+    end
+end)
+
+connect(UIS.JumpRequest,function()
+    if camLocked then
+        holdLock()
+    end
+end)
+
+function rivalsSnap(part)
+    if type(mousemoverel)~="function" or not Camera then
+        return
+    end
+
+    local screen,onScreen=Camera:WorldToViewportPoint(part.Position)
+
+    if not onScreen then
+        return
+    end
+
+    local mouse=mousePosition()
+
+    aimTarget=part.Position
+    aimRivals=true
+
+    pcall(function()
+        mousemoverel(screen.X-mouse.X,screen.Y-mouse.Y)
+    end)
+end
+
+connect(RS.RenderStepped,function(dt)
+    pcall(function()
+        camActive=false
+        aimRivals=false
+        updateFOV()
+
+        local cam=workspace.CurrentCamera
+
+        if cam then
+            Camera=cam
+        end
+
+        serverInfoTimer+=dt
+
+        if serverInfoTimer>=0.5 then
+            serverInfoTimer=0
+
+            if serverInfoLabel and serverInfoLabel.Parent then
+                updateServerInfo()
+            end
+        end
+
+        highlightTimer+=dt
+
+        if CONFIG.Visuals.HighlightAll and highlightTimer>=0.2 then
+            highlightTimer=0
+            refreshHighlights()
+        end
+
+        if CONFIG.Games.CFrameSpeedEnabled and cframeRun and CONFIG.Games.CFrameSpeed>0 and not orbitActive then
+            local character=LP.Character
+            local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+            local root=character and character:FindFirstChild("HumanoidRootPart")
+
+            if humanoid and root and humanoid.Health>0 then
+                local direction=humanoid.MoveDirection
+
+                if direction.Magnitude>0 then
+                    root.CFrame=root.CFrame+direction*(CONFIG.Games.CFrameSpeed*dt*60)
+                end
+            end
+        end
+
+        orbitActive=false
+
+        gameFeatureTimer+=dt
+
+        if gameFeatureTimer>=1 then
+            gameFeatureTimer=0
+
+            if CONFIG.Games.ArsenalHitbox then
+                setArsenalHitbox(true)
+            end
+        end
+
+        if not CONFIG.Silent.Enabled then
+            target=nil
+            orbitTarget=nil
+            orbitPart=nil
+            aimTarget=nil
+            return
+        end
+
+        camRun=true
+
+        if not Camera then
+            return
+        end
+
+        local picked=closest()
+
+        if not picked then
+            target=nil
+            orbitTarget=nil
+            orbitPart=nil
+            targetDistance=math.huge
+            return
+        end
+
+        target=picked
+
+        local character=target.Character
+        local part=character and aimPart(character)
+
+        if not part then
+            return
+        end
+
+        if CONFIG.Silent.Orbit and orbitRun then
+            orbitPart=part
+            orbitActive=true
+            return
+        end
+
+        orbitPart=nil
+        orbitTarget=nil
+
+        if silentReady then
+            aimTarget=nil
+            return
+        end
+
+        if isRivals() then
+            rivalsSnap(part)
+            return
+        end
+
+        aimTarget=part.Position
+        camActive=true
+        holdLock()
+    end)
+end)
+
+connect(RS.RenderStepped,function()
+    pcall(function()
+        local playerGui=LP:FindFirstChildOfClass("PlayerGui")
+
+        if not playerGui then
+            return
+        end
+
+        if not UI.Built or not UI.GUI or UI.GUI.Parent~=playerGui then
+            if os.clock()-(UI.LastBuild or 0)>0.5 then
+                local ok,err=pcall(buildGui)
+
+                if not ok then
+                    warn("gui build: "..tostring(err))
+                end
+
+                if UI.Built then
+                    pcall(refresh)
+                end
+            end
+        end
+    end)
+
+    if not UI.Root or not UI.Shadow or not UI.FOVFrame then
+        return
+    end
+
+    pcall(function()
+        local playerGui=LP:FindFirstChildOfClass("PlayerGui")
+
+        if playerGui and UI.FOVGui and UI.FOVGui.Parent~=playerGui then
+            UI.FOVGui.Parent=playerGui
+        end
+
+        UI.Root.Visible=not UI.Hidden
+        UI.Shadow.Visible=not UI.Hidden
+        UI.FOVFrame.Visible=CONFIG.Silent.FOVCheck and not UI.Hidden
+
+        if UI.Root.Visible then
+            if UIS.MouseBehavior~=Enum.MouseBehavior.Default then
+                UIS.MouseBehavior=Enum.MouseBehavior.Default
+            end
+        end
+
+        if camLocked then
+            holdLock()
+        end
+
+        local shouldLock=camActive and not orbitActive
+
+        if shouldLock~=camLocked then
+            if shouldLock then
+                lockCamera()
+            else
+                unlockCamera()
+            end
+        end
+    end)
+end)
+
+connect(RS.Heartbeat,function(dt)
+    if not CONFIG.Triggerbot.Enabled or not triggerHeld then
+        triggerTimer=0
+        return
+    end
+
+    triggerTimer+=dt
+
+    local delay=math.clamp(tonumber(CONFIG.Triggerbot.Delay) or .08,0,1)
+
+    if triggerTimer<delay then
+        return
+    end
+
+    if triggerTarget() then
+        triggerTimer=0
+        clickMouse()
+    end
+end)
+
+connect(RS.Heartbeat,function(dt)
+    if not orbitActive or not orbitPart or not orbitPart.Parent then
+        if orbitState then
+            orbitState=false
+
+            local humanoid=LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+
+            if humanoid then
+                humanoid.AutoRotate=true
+                humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+        end
+
+        orbitTarget=nil
+        return
+    end
+
+    local character=LP.Character
+    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+    local root=character and character:FindFirstChild("HumanoidRootPart")
+
+    if not humanoid or not root or humanoid.Health<=0 then
+        return
+    end
+
+    local center=orbitPart.Position
+
+    if orbitTarget~=target then
+        orbitTarget=target
+
+        local flat=Vector3.new(root.Position.X-center.X,0,root.Position.Z-center.Z)
+        orbitAngle=math.atan2(flat.Z,flat.X)
+    end
+
+    if not orbitState then
+        orbitState=true
+        humanoid.AutoRotate=false
+        humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+    end
+
+    orbitAngle+=dt*math.max(tonumber(CONFIG.Silent.OrbitSpeed) or 0,0)*10
+
+    local distance=math.clamp(tonumber(CONFIG.Silent.OrbitDistance) or 10,3,40)
+    local height=tonumber(CONFIG.Silent.OrbitHeight) or 5
+    local offset=Vector3.new(math.cos(orbitAngle)*distance,height,math.sin(orbitAngle)*distance)
+
+    root.CFrame=CFrame.new(center+offset,center)
+    root.AssemblyLinearVelocity=Vector3.zero
+    root.AssemblyAngularVelocity=Vector3.zero
+end)
+
+RS:BindToRenderStep("ZZZOrbitCamera",Enum.RenderPriority.Camera.Value+1,function(dt)
+    pcall(function()
+        if not Camera then
+            return
+        end
+
+        if orbitActive and orbitPart and orbitPart.Parent then
+            local center=orbitPart.Position
+            local distance=math.clamp(tonumber(CONFIG.Silent.OrbitDistance) or 10,3,40)
+            local height=tonumber(CONFIG.Silent.OrbitHeight) or 5
+            local dir=Vector3.new(math.cos(orbitAngle),0,math.sin(orbitAngle))
+
+            local pos=center+dir*(distance+4)+Vector3.new(0,height,0)
+
+            Camera.CFrame=CFrame.lookAt(pos,center)
+            return
+        end
+
+        if not camActive or not aimTarget then
+            return
+        end
+
+        holdLock()
+
+        Camera.CFrame=CFrame.lookAt(Camera.CFrame.Position,aimTarget)
+    end)
+end)
+
+local function setupPlayer(plr)
+    if plr==LP then
+        return
+    end
+
+    playerConnections[plr]={}
+
+    local list=playerConnections[plr]
+
+    table.insert(list,plr.CharacterAdded:Connect(function()
+        task.wait(.2)
+
+        if CONFIG.Games.ArsenalHitbox then
+            setArsenalHitbox(true)
+        end
+
+        if CONFIG.Visuals.HighlightAll then
+            removeHighlight(plr)
+            updateHighlight(plr)
+        end
+
+        if target==plr and camRun then
+            target=nil
+            orbitTarget=nil
+        end
+    end))
+
+    table.insert(list,plr:GetPropertyChangedSignal("Team"):Connect(function()
+        if CONFIG.Visuals.HighlightAll then
+            updateHighlight(plr)
+        end
+
+        if target==plr and CONFIG.Checks.TeamCheck and sameTeam(plr) then
+            target=nil
+            orbitTarget=nil
+        end
+    end))
+
+    table.insert(list,plr:GetAttributeChangedSignal("Team"):Connect(function()
+        if CONFIG.Visuals.HighlightAll then
+            updateHighlight(plr)
+        end
+
+        if target==plr and CONFIG.Checks.TeamCheck and sameTeam(plr) then
+            target=nil
+            orbitTarget=nil
+        end
+    end))
+
+    if CONFIG.Visuals.HighlightAll then
+        task.spawn(function()
+            task.wait(.2)
+            updateHighlight(plr)
+        end)
+    end
+end
+
+connect(LP.CharacterAdded,function(character)
+    task.wait(0.2)
+
+    if not isSpectating then
+        local humanoid=character:FindFirstChildOfClass("Humanoid")
+        Camera=workspace.CurrentCamera
+
+        if Camera and humanoid then
+            Camera.CameraType=Enum.CameraType.Custom
+            Camera.CameraSubject=humanoid
+        end
+    end
+
+    local hum=character:FindFirstChildOfClass("Humanoid")
+
+    if hum then
+        connect(hum.StateChanged,function()
+            if camLocked then
+                holdLock()
+            end
+        end)
+    end
+
+    if CONFIG.Visuals.HighlightAll then
+        task.spawn(function()
+            task.wait(.3)
+            refreshHighlights()
+        end)
+    end
+end)
+
+connect(workspace:GetPropertyChangedSignal("CurrentCamera"),function()
+    Camera=workspace.CurrentCamera
+    updateFitScale()
+end)
+
+if workspace.CurrentCamera then
+    connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"),updateFitScale)
+end
+
+for _,plr in ipairs(Players:GetPlayers()) do
+    setupPlayer(plr)
+end
+
+connect(Players.PlayerAdded,function(plr)
+    setupPlayer(plr)
+    dirtyPages.Whitelist=true
+
+    if CONFIG.Visuals.HighlightAll then
+        task.spawn(function()
+            task.wait(.3)
+            refreshHighlights()
+            task.wait(1)
+            refreshHighlights()
+        end)
+    end
+end)
+
+connect(Players.PlayerRemoving,function(plr)
+    if selectedSpectateTarget==plr then
+        unspectatePlayer()
+    end
+
+    removeHighlight(plr)
+    dirtyPages.Whitelist=true
+
+    local list=playerConnections[plr]
+
+    if list then
+        for _,c in ipairs(list) do
+            pcall(function()
+                c:Disconnect()
+            end)
+        end
+    end
+
+    playerConnections[plr]=nil
+
+    if target==plr then
+        target=nil
+        orbitTarget=nil
+    end
+end)
+
+applyLoadedConfig=function()
+    camRun=CONFIG.Silent.Enabled
+    orbitRun=CONFIG.Silent.Orbit
+    cframeRun=CONFIG.Games.CFrameSpeedEnabled
+    triggerHeld=false
+    triggerTimer=0
+    target=closest()
+    orbitTarget=nil
+    setNoclip(CONFIG.Games.Noclip)
+    setFPSUnlock(CONFIG.Settings.FPSUnlock)
+    updateAllHighlights()
+    updateFitScale()
+    dirtyPages.Combat=true
+    dirtyPages.Checks=true
+    dirtyPages.Games=true
+    dirtyPages.Visuals=true
+    dirtyPages.Whitelist=true
+    dirtyPages.Settings=true
+
+    if CONFIG.Silent.Enabled then
+        task.spawn(setupSilent)
+    end
+end
+
+local function autoloadConfig()
+    if not filesAvailable() then
+        return false
+    end
+
+    for _,name in ipairs(getConfigs()) do
+        local path=configPath(name)
+
+        if isfile(path) then
+            local ok,data=pcall(function()
+                return HttpService:JSONDecode(readfile(path))
+            end)
+
+            if ok and type(data)=="table" and data.Config and data.Config.Autoload==true then
+                if loadConfig(name) and applyLoadedConfig then
+                    applyLoadedConfig()
+                end
+
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+function _G.ZZZUnload()
+    pcall(function()
+        RS:UnbindFromRenderStep("ZZZOrbitCamera")
+    end)
+
+    pcall(destroySilent)
+    pcall(disconnectAll)
+
+    if UI.FOVGui then
+        pcall(function()
+            UI.FOVGui:Destroy()
+        end)
+    end
+
+    if UI.GUI then
+        pcall(function()
+            UI.GUI:Destroy()
+        end)
+    end
+
+    UI.Built=false
+end
+
+local playerGui=LP:FindFirstChildOfClass("PlayerGui")
+
+if playerGui then
+    for _,child in ipairs(playerGui:GetChildren()) do
+        if child.Name=="ZZZRivalsGUI" or child.Name=="ZZZRivalsFOV" then
+            child:Destroy()
+        end
+    end
+end
+
+task.spawn(setupSilent)
+
+setFPSUnlock(CONFIG.Settings.FPSUnlock)
+buildGui()
+updateNav()
+updateFitScale()
+refresh()
+updateFOV()
+
+if autoloadConfig() then
+    refresh()
+end
+
+task.spawn(function()
+    for _,tab in ipairs({"Checks","Games","Visuals","Whitelist","Avatars","Settings"}) do
+        task.wait()
+
+        if not UI.Pages[tab] then
+            buildPage(tab)
+
+            local page=UI.Pages[tab]
+
+            if page then
+                page.Visible=tab==currentTab
+            end
+        end
+    end
+end)
