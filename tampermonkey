@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duel Suite (Userscript Port)
 // @namespace    duel-suite
-// @version      1.1.9
-// @description  Full userscript port of the Duel mitmproxy tool: per-coin balances, fake deposits, bet fabricators, crash/roulette, provider mirrors, PP live, profile/tx/rakeback patchers, multi-coin bridge relay, capture.
+// @version      1.1.0
+// @description  Full userscript port of the Duel mitmproxy tool: balance spoof, fake deposits, bet fabricators, crash/roulette, provider mirrors, PP live, profile/tx/rakeback patchers, bridge relay, capture.
 // @author       idrcdttm on discord
 // @match        https://duel.com/*
 // @match        https://*.duel.com/*
@@ -74,13 +74,12 @@
     const SYNTH_ID_RANGE = 900;
 
     const CRYPTO_RATES_USD = {
-        101: 0.000440200,
+        101: 0.000015343659616255,
         102: 0.004604263548045490,
-        103: 0.000440200,
+        103: 0.000520177692699826,
         105: 1.000860740236603430,
         106: 1.000300090027008038,
     };
-    const PINNED_RATES = new Set([]);
     let EUR_PER_USD = 1.0 / 1.1535;
 
     const HOUSE_EDGE = 0.01;
@@ -97,7 +96,7 @@
     const DEPOSIT_HARD_FALLBACK_SECS = 14.0;
 
     const BAL_PUSH_MIN_GAP_SECS = 0.40;
-    const CRASH_ROULETTE_LEARN = false;
+    const CRASH_ROLLETTE_LEARN = false;
     const CLIENT_ACK_ARGS = Object.create(null);
 
     const BJ_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
@@ -113,7 +112,7 @@
     };
     const CONFIRM_SECS_DEFAULT = [25, 55];
 
-    const DEPOSIT_PRICES = { USDT: 1.0, USDC: 1.0, DAI: 1.0, USD: 1.0, BTC: 4201.0, ETH: 2271.0, SOL: 200.0, LTC: 42.0, DOGE: 0.38, XRP: 2.30, TRX: 0.24, BNB: 640.0, BCH: 470.0, TON: 5.20, MATIC: 0.50, ADA: 0.90, AVAX: 35.0, LINK: 22.0 };
+    const DEPOSIT_PRICES = { USDT: 1.0, USDC: 1.0, DAI: 1.0, USD: 1.0, BTC: 95000.0, ETH: 3400.0, SOL: 200.0, LTC: 90.0, DOGE: 0.38, XRP: 2.30, TRX: 0.24, BNB: 640.0, BCH: 470.0, TON: 5.20, MATIC: 0.50, ADA: 0.90, AVAX: 35.0, LINK: 22.0 };
     const DEPOSIT_EXPLORERS = {
         BTC: "https://www.blockchain.com/explorer/transactions/btc/",
         LTC: "https://blockchair.com/litecoin/transaction/",
@@ -159,15 +158,6 @@
     const BRIDGE_WALLET = "duel";
     const BRIDGE_POLL_SECS = 2.5;
     const BRIDGE_HEARTBEAT_SECS = 15.0;
-    const BRIDGE_IDENTIFY_TRIES = 4;
-
-    const BRIDGE_DECIMALS = {
-        eth: 18, btc: 8, ltc: 8, bch: 8, doge: 8, sol: 9, trx: 6, xrp: 6,
-        bnb: 18, matic: 18, ada: 6, avax: 18, ton: 9, link: 18,
-        usdt: 6, usdc: 6, dai: 18,
-    };
-    const BRIDGE_SYMBOLS = new Set(Object.keys(BRIDGE_DECIMALS));
-    const RELAY_UNIDENTIFIED = "not initialized or identified";
 
     const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
 
@@ -233,12 +223,6 @@
     function fmtCoins(x) {
         try { return (parseFloat(x) || 0).toFixed(6); } catch (_) { return "0.000000"; }
     }
-    function shortNative(v) {
-        const n = parseFloat(v);
-        if (!isFinite(n) || n <= 0) return "0";
-        if (n >= 1000) return n.toFixed(2);
-        return n.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
-    }
     function sci5(x) {
         try {
             const s = (parseFloat(x) * 1e18).toExponential(5).toUpperCase();
@@ -265,105 +249,17 @@
     };
 
     const STATE_KEY = "duel_state_v1";
-    const LEDGER_KEY = "duel_ledger_v1";
-    const SEED_VERSION = 3;
-    const SEED_BALANCES = { "101": 15000.0, "103": 41645.0 };
-    const DEFAULT_STATE = {
-        enabled: true,
-        balance: 41645.0,
-        balances: { "101": 15000.0, "103": 41645.0 },
-        active_coin: 103,
-        seed_v: SEED_VERSION,
-    };
-
-    const Ledger = {
-        data: null,
-
-        load() {
-            if (this.data !== null) return this.data;
-            this.data = {};
-            try {
-                const raw = localStorage.getItem(LEDGER_KEY);
-                if (raw) {
-                    const parsed = JSON.parse(raw);
-                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                        for (const k of Object.keys(parsed)) {
-                            const cid = parseInt(k, 10);
-                            const v = parseFloat(parsed[k]);
-                            if (isFinite(cid) && cid > 0 && isFinite(v) && v >= 0) this.data[String(cid)] = v;
-                        }
-                    }
-                }
-            } catch (_) { }
-            return this.data;
-        },
-        get(coinId) {
-            const d = this.load();
-            const v = d[String(parseInt(coinId, 10))];
-            if (v === undefined) return null;
-            const f = parseFloat(v);
-            return isFinite(f) ? f : null;
-        },
-        set(coinId, usd) {
-            const d = this.load();
-            const cid = String(parseInt(coinId, 10));
-            if (cid === "NaN" || cid === "0") return;
-            const v = Math.max(0, parseFloat(usd) || 0);
-            d[cid] = v;
-            this.save();
-        },
-        replace(map) {
-            if (!map || typeof map !== "object") return;
-            const d = this.load();
-            for (const k of Object.keys(d)) {
-                if (map[k] === undefined) delete d[k];
-            }
-            for (const k of Object.keys(map)) {
-                const cid = parseInt(k, 10);
-                const v = parseFloat(map[k]);
-                if (!isFinite(cid) || cid <= 0 || !isFinite(v) || v < 0) continue;
-                d[String(cid)] = v;
-            }
-            this.save();
-        },
-        snapshot() {
-            const d = this.load();
-            const out = {};
-            for (const k of Object.keys(d)) out[k] = d[k];
-            return out;
-        },
-        save() {
-            try { localStorage.setItem(LEDGER_KEY, JSON.stringify(this.data || {})); } catch (_) { }
-        },
-    };
+    const DEFAULT_STATE = { enabled: true, balance: 10000.00, coin_balance: {} };
 
     const Store = {
         read() {
-            let st = null;
             try {
                 const raw = GM_getValue(STATE_KEY, null);
-                if (raw) st = JSON.parse(raw);
+                if (raw) return JSON.parse(raw);
             } catch (_) { }
-            if (!st || typeof st !== "object") st = deepCopy(DEFAULT_STATE);
-            if (!st.balances || typeof st.balances !== "object" || Array.isArray(st.balances)) {
-                st.balances = {};
-                const seed = parseInt(st.spoof_coin || st.active_coin || 103, 10);
-                const v = fVal(st.balance, 10000.0);
-                if (isFinite(seed) && seed > 0) st.balances[String(seed)] = v;
-                st.balance = v;
-            }
-            if (!Object.keys(st.balances).length) {
-                const led = Ledger.snapshot();
-                for (const k of Object.keys(led)) {
-                    const cid = parseInt(k, 10);
-                    const v = parseFloat(led[k]);
-                    if (isFinite(cid) && cid > 0 && isFinite(v) && v > 0) st.balances[String(cid)] = v;
-                }
-            }
-            return st;
+            return deepCopy(DEFAULT_STATE);
         },
         write(state) {
-            try { if (state && state.balances) Ledger.replace(state.balances); } catch (_) { }
             try { GM_setValue(STATE_KEY, JSON.stringify(state)); } catch (e) { dbg("STORE_WRITE_ERR", String(e)); }
         },
         update(mutator) {
@@ -378,95 +274,62 @@
         get gamesBroken() {
             try { return !!this.read().games_broken; } catch (_) { return false; }
         },
-
-        balOf(coinId) {
-            const cid = String(parseInt(coinId, 10));
-            if (cid === "NaN" || cid === "0") return 0.0;
-            const m = this.read().balances || {};
-            if (m[cid] !== undefined) return fVal(m[cid], 0.0);
-            const led = Ledger.get(cid);
-            if (led !== null) return led;
+        get balance() { return fVal(this.read().balance, 0.0); },
+        setBalance(v) {
+            const cid = currentCoinId();
+            setCoinBalance(cid, v);
+        },
+        adjustBalance(delta, floor = 0.0) {
+            const cid = currentCoinId();
+            return adjustCoinBalance(cid, delta, floor);
+        },
+        coinMap() { return Object.assign({}, this.read().coin_balance || {}); },
+        coinBalance(coinId) {
+            const cid = parseInt(coinId, 10);
+            if (!isFinite(cid)) return 0.0;
+            const s = this.read();
+            const map = s.coin_balance || {};
+            const raw = map[String(cid)];
+            if (raw !== undefined) return fVal(raw);
+            if (cid === iVal(s.active_coin, -1)) return fVal(s.balance, 0.0);
             return 0.0;
         },
-        balancesMap() {
-            const m = this.read().balances || {};
-            const out = {};
-            for (const k of Object.keys(m)) {
-                const cid = parseInt(k, 10);
-                if (!isFinite(cid) || cid <= 0) continue;
-                const v = fVal(m[k]);
-                if (v > 0) out[cid] = v;
-            }
-            if (!Object.keys(out).length) {
-                const led = Ledger.snapshot();
-                for (const k of Object.keys(led)) {
-                    const cid = parseInt(k, 10);
-                    const v = parseFloat(led[k]);
-                    if (!isFinite(cid) || cid <= 0 || !isFinite(v) || v <= 0) continue;
-                    out[cid] = v;
-                }
-            }
-            return out;
-        },
-        totalUsd() {
-            let t = 0.0;
-            for (const v of Object.values(this.balancesMap())) t += v;
-            return t;
-        },
-        setBal(coinId, usd) {
-            const cid = String(parseInt(coinId, 10));
-            if (cid === "NaN" || cid === "0") return 0.0;
-            const v = Math.max(0.0, parseFloat(usd) || 0.0);
+        setCoinBalance(coinId, usd) {
+            const cid = parseInt(coinId, 10);
+            if (!isFinite(cid)) return 0.0;
+            const v = Math.max(0.0, fVal(usd));
             this.update(s => {
-                s.balances = s.balances || {};
-                s.balances[cid] = v;
-                s.balance = v;
+                s.coin_balance = s.coin_balance || {};
+                s.coin_balance[String(cid)] = v;
+                if (cid === iVal(s.active_coin, -1)) s.balance = v;
             });
-            Ledger.set(cid, v);
-            if (typeof BalCache !== "undefined" && BalCache) { BalCache.cid = null; BalCache.v = null; BalCache.t = 0.0; }
+            BalCache.v = null; BalCache.t = 0.0;
             return v;
         },
-        addBal(coinId, delta, floor = 0.0) {
-            const cid = String(parseInt(coinId, 10));
-            if (cid === "NaN" || cid === "0") return 0.0;
-            delta = parseFloat(delta);
-            if (!isFinite(delta)) delta = 0;
+        adjustCoinBalance(coinId, delta, floor = 0.0) {
+            const cid = parseInt(coinId, 10);
+            if (!isFinite(cid)) return 0.0;
             let out = 0.0;
             this.update(s => {
-                s.balances = s.balances || {};
-                let base = fVal(s.balances[cid], NaN);
-                if (!isFinite(base)) {
-                    const led = Ledger.get(cid);
-                    base = led === null ? 0.0 : led;
-                }
-                let nv = base + delta;
+                s.coin_balance = s.coin_balance || {};
+                const base = s.coin_balance[String(cid)];
+                const cur = base !== undefined ? fVal(base) : (cid === iVal(s.active_coin, -1) ? fVal(s.balance) : 0.0);
+                let nv = cur + delta;
                 if (floor !== null && nv < floor) nv = floor;
-                s.balances[cid] = nv;
-                s.balance = nv;
+                s.coin_balance[String(cid)] = nv;
+                if (cid === iVal(s.active_coin, -1)) s.balance = nv;
                 out = nv;
             });
-            Ledger.set(cid, out);
-            if (typeof BalCache !== "undefined" && BalCache) { BalCache.cid = null; BalCache.v = null; BalCache.t = 0.0; }
+            BalCache.v = null; BalCache.t = 0.0;
             return out;
         },
-        get balance() { return this.balOf(activeCoinId()); },
-        setBalance(v) { return this.setBal(activeCoinId(), v); },
-        adjustBalance(delta, floor = 0.0) { return this.addBal(activeCoinId(), delta, floor); },
-
-        setBalNative(coinId, native) {
-            const cid = parseInt(coinId, 10);
-            const n = parseFloat(native);
-            if (!isFinite(cid) || cid <= 0 || !isFinite(n) || n < 0) return 0.0;
-            const npu = this.nativePerUsd(cid);
-            return this.setBal(cid, npu > 0 ? (n / npu) : 0.0);
+        migrateCoinBalances() {
+            const s = this.read();
+            if (s.coin_balance && Object.keys(s.coin_balance).length) return;
+            const cid = iVal(s.active_coin || s.spoof_coin, 0);
+            if (cid <= 0) return;
+            this.update(st => { st.coin_balance = { [String(cid)]: fVal(st.balance) }; });
         },
-        balNative(coinId) {
-            const cid = parseInt(coinId, 10);
-            if (!isFinite(cid) || cid <= 0) return 0.0;
-            const npu = this.nativePerUsd(cid);
-            return npu > 0 ? (this.balOf(cid) * npu) : 0.0;
-        },
-
         addWagered(amount, betCount = 1) {
             amount = parseFloat(amount);
             if (!isFinite(amount) || amount <= 0) return;
@@ -580,14 +443,8 @@
                 s.deposits = s.deposits || [];
                 s.deposits.push(rec);
                 if (s.deposits.length > 100) s.deposits = s.deposits.slice(-100);
-                if (deduct && coinId !== null) {
-                    s.balances = s.balances || {};
-                    s.balances[String(coinId)] = Math.max(0.0, fVal(s.balances[String(coinId)], 0.0) - usd);
-                }
             });
-            if (deduct && coinId !== null && typeof BalCache !== "undefined" && BalCache) {
-                BalCache.cid = null; BalCache.v = null; BalCache.t = 0.0;
-            }
+            if (deduct && coinId !== null) adjustCoinBalance(coinId, -usd);
             return rec;
         },
         createDeposit(crypto, usd, relayId = null) { return this.createTx("deposit", crypto, usd, null, false, relayId); },
@@ -780,134 +637,33 @@
         return false;
     }
 
-    const BalCache = { cid: null, v: null, t: 0.0, TTL: 0.25 };
-    function balUsd(coinId = null) {
-        const cid = (coinId === null) ? activeCoinId() : parseInt(coinId, 10);
+    const BalCache = { v: null, t: 0.0, coin: null, TTL: 0.25 };
+
+    function currentCoinId() {
+        if (ACTIVE_COIN) return parseInt(ACTIVE_COIN, 10);
+        if (SPOOF_COIN) return parseInt(SPOOF_COIN, 10);
+        return parseInt(USER.default_balance_type || 105, 10);
+    }
+
+    function coinBalance(coinId) { return Store.coinBalance(coinId); }
+    function setCoinBalance(coinId, usd) { return Store.setCoinBalance(coinId, usd); }
+    function adjustCoinBalance(coinId, delta, floor = 0.0) { return Store.adjustCoinBalance(coinId, delta, floor); }
+
+    function balUsd() {
+        const cid = currentCoinId();
         const now = nowSecs();
-        if (BalCache.cid === cid && BalCache.v !== null && (now - BalCache.t) < BalCache.TTL) return BalCache.v;
-        const v = Store.balOf(cid);
-        BalCache.cid = cid; BalCache.v = v; BalCache.t = now;
+        if (BalCache.v !== null && BalCache.coin === cid && (now - BalCache.t) < BalCache.TTL) return BalCache.v;
+        const v = coinBalance(cid);
+        BalCache.v = v; BalCache.coin = cid; BalCache.t = now;
         return v;
     }
-    function adjBal(delta, coinId = null) {
-        let cid = (coinId === null || coinId === undefined) ? activeCoinId() : parseInt(coinId, 10);
-        if (!isFinite(cid) || cid <= 0) cid = activeCoinId();
-        delta = parseFloat(delta);
-        if (!isFinite(delta)) delta = 0;
-        const before = Store.balOf(cid);
-        Store.addBal(cid, delta);
-        const v = Store.balOf(cid);
-        if (delta !== 0 && Math.abs(v - before) < 1e-12) dbg("BAL_NO_MOVE", { cid, delta, before, v });
-        BalCache.cid = cid;
-        BalCache.v = v;
-        BalCache.t = nowSecs();
-        markBalanceDirty(1.0);
-        DomLock.push(cid, v);
-        try { if (typeof Panel !== "undefined" && Panel.refresh) Panel.refresh(); } catch (_) { }
+    function adjBal(delta) {
+        const cid = currentCoinId();
+        const v = adjustCoinBalance(cid, delta);
+        BalCache.v = v; BalCache.coin = cid; BalCache.t = nowSecs();
         return v;
     }
     function wager(amount, count = 1) { Store.addWagered(amount, count); }
-
-    const DomLock = {
-        headerNodes: new Set(),
-        lastUsd: null,
-        lastNative: null,
-        syncing: false,
-        timer: null,
-        observer: null,
-
-        num(raw) {
-            const v = parseFloat(String(raw).replace(/[$,]/g, ""));
-            return isFinite(v) ? v : null;
-        },
-        headerText(usd) {
-            return "$" + (Number(usd) || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        },
-        headerLive() {
-            for (const n of Array.from(this.headerNodes)) {
-                if (!n || n.isConnected === false) { this.headerNodes.delete(n); continue; }
-                return n;
-            }
-            return null;
-        },
-        headerShows(usd) {
-            const n = this.headerLive();
-            if (!n) return false;
-            const v = this.num(n.textContent);
-            return v !== null && Math.abs(v - usd) < 0.005;
-        },
-
-        syncHeader() {
-            if (!Store.enabled || !ENABLE_PATCHER || this.syncing) return;
-            this.syncing = true;
-            try {
-                const usd = balUsd();
-                const want = this.headerText(usd);
-                if (!this.headerNodes.size) {
-                    let best = null;
-                    try {
-                        const els = document.querySelectorAll("span,div,p,b,strong,small");
-                        for (const el of els) {
-                            if (el.children && el.children.length) continue;
-                            if (el.id && String(el.id).startsWith("__duel")) continue;
-                            const raw = String(el.textContent || "").trim();
-                            if (!/^\$?\d[\d,]*\.\d{2}$/.test(raw)) continue;
-                            let top = 9999;
-                            try { top = el.getBoundingClientRect().top; } catch (_) { }
-                            if (top < 0 || top > 215) continue;
-                            best = el;
-                            break;
-                        }
-                    } catch (_) { }
-                    if (best) this.headerNodes.add(best);
-                }
-                for (const n of Array.from(this.headerNodes)) {
-                    if (!n || n.isConnected === false) { this.headerNodes.delete(n); continue; }
-                    const cur = String(n.textContent || "").trim();
-                    if (cur === want) continue;
-                    try { n.textContent = want; } catch (_) { }
-                }
-            } finally {
-                this.syncing = false;
-            }
-        },
-
-        push(coinId, usd) {
-            if (!Store.enabled || !ENABLE_PATCHER) return;
-            if (coinId !== null && parseInt(coinId, 10) !== activeCoinId()) return;
-            this.lastUsd = usd;
-            this.lastNative = Store.usdToNative(usd, coinId === null ? activeCoinId() : coinId);
-            this.schedule();
-        },
-
-        schedule() {
-            if (this.timer !== null) return;
-            this.timer = setTimeout(() => {
-                this.timer = null;
-                this.syncHeader();
-            }, 30);
-        },
-
-        apply() { this.syncHeader(); },
-
-        install() {
-            if (this.observer) return;
-            const Ctor = typeof MutationObserver === "function" ? MutationObserver : null;
-            if (!Ctor) return;
-            this.observer = new Ctor(() => {
-                if (this.syncing) return;
-                this.syncHeader();
-            });
-            try {
-                this.observer.observe(document.documentElement || document, {
-                    childList: true, subtree: true, characterData: true,
-                });
-            } catch (_) { }
-            setTimeout(() => { try { this.syncHeader(); } catch (_) { } }, 400);
-            setTimeout(() => { try { this.syncHeader(); } catch (_) { } }, 1500);
-            dbg("DOM_LOCK_INSTALLED");
-        },
-    };
 
     function parseSio(text) {
         if (!text || !text.startsWith("42")) return null;
@@ -977,18 +733,17 @@
         open(sock) { return !!(sock && sock.readyState === 1); },
 
         arm(sock) {
-            if (!sock || this.sockets.includes(sock)) return;
+            if (this.sockets.includes(sock)) return;
             this.sockets.push(sock);
             if (this.sockets.length > 6) this.sockets.splice(0, this.sockets.length - 6);
-            if (!this.open(sock)) return;
-            lastDeliveredBal[0] = null;
-            markBalanceDirty();
-            dbg("WS_REG", { live: this.sockets.length, host: (sock.__duel_host || "") });
-            lastPushAt = nowSecs();
-            if (injectWs(sock, makeBalanceFrame())) lastDeliveredBal[0] = balUsd();
-            for (const d of [80, 220, 500, 1100]) {
-                setTimeout(() => { try { pushBalanceAfterBet(); } catch (_) { } }, d);
-            }
+            setTimeout(() => {
+                if (!WsHub.open(sock)) { WsHub.unregister(sock); return; }
+                lastDeliveredBal[0] = null;
+                markBalanceDirty();
+                dbg("WS_REG", { live: WsHub.sockets.length, host: (sock.__duel_host || "") });
+                lastPushAt = nowSecs();
+                if (injectWs(sock, makeBalanceFrame())) lastDeliveredBal[0] = balUsd();
+            }, 50);
         },
         unregister(sock) {
             const i = this.sockets.indexOf(sock);
@@ -1001,9 +756,7 @@
         },
         joined(sock, ns) {
             if (!ns) return true;
-            const set = sock.__duel_ns;
-            if (!set || !set.size) return true;
-            return set.has(ns);
+            return this.namespaces(sock).has(ns);
         },
         observeFrame(sock, text) {
             if (!text.startsWith("40/") && !text.startsWith("41/")) return;
@@ -1027,6 +780,7 @@
     function injectWs(sock, text) {
         try {
             if (!sock || !WsHub.open(sock) || !sock.__duel_is_sio) return false;
+            if (!WsHub.sockets.includes(sock)) return false;
             const ns = frameNamespace(text);
             if (ns && !WsHub.joined(sock, ns)) return false;
             sock.__duel_inject(text);
@@ -1041,7 +795,7 @@
         for (const s of WsHub.sockets.slice()) {
             if (s === target) continue;
             if (injectWs(s, text)) sent++;
-            else if (!WsHub.open(s)) WsHub.unregister(s);
+            else if (!WsHub.open(s) || !s.__duel_is_sio) WsHub.unregister(s);
         }
         return sent;
     }
@@ -1077,11 +831,6 @@
         sock.__duel_onSend = [];
         sock.__duel_addSendObserver = function (fn) { sock.__duel_onSend.push(fn); return fn; };
 
-        if (sock.__duel_is_sio) {
-            origAdd("open", () => { WsHub.arm(sock); });
-            if (WsHub.open(sock)) WsHub.arm(sock);
-        }
-
         const mutate = (text) => {
             if (sock.__duel_injecting) return null;
             if (memoSet && text === memoRaw) return memoOut;
@@ -1108,11 +857,10 @@
                     }
                     if (sioFrameSeen(data)) {
                         sock.__duel_is_sio = true;
-                        if (!WsHub.sockets.includes(sock)) WsHub.arm(sock);
                         WsHub.observeFrame(sock, data);
                         const consumed = handleClientFrame(sock, data);
                         if (consumed) {
-                            if (CRASH_ROULETTE_LEARN) {
+                            if (CRASH_ROLLETTE_LEARN) {
                                 captureClientFrame(sock, data, "relayed-for-learn");
                                 return origSend(data);
                             }
@@ -1133,36 +881,23 @@
                 dbg("WS_CLOSE", { host, code: ev && ev.code, reason: (ev && ev.reason) || "", wasClean: !!(ev && ev.clean) });
             }
         });
-
-        sock.__duel_errQuiet = false;
-        origAdd("error", (ev) => {
-            try {
-                if (sock.readyState === 1) {
-                    if (!sock.__duel_errQuiet) { sock.__duel_errQuiet = true; dbg("WS_ERR_IGNORED", { host }); }
-                    try { ev.stopImmediatePropagation(); } catch (_) { }
-                    try { ev.preventDefault(); } catch (_) { }
-                    return;
-                }
-                if (!sock.__duel_errQuiet) { sock.__duel_errQuiet = true; dbg("WS_ERROR", { host, ready: sock.readyState }); }
-            } catch (_) { }
-        }, true);
+        sock.addEventListener("error", () => { dbg("WS_ERROR", { host, ready: sock.readyState }); });
 
         origAdd("message", (ev) => {
             memoSet = false;
             if (sock.__duel_injecting) return;
             try {
                 if (typeof ev.data !== "string") return;
-                if (sioFrameSeen(ev.data)) {
-                    sock.__duel_is_sio = true;
-                    if (!WsHub.sockets.includes(sock)) WsHub.arm(sock);
-                }
+                if (sioFrameSeen(ev.data)) sock.__duel_is_sio = true;
                 WsHub.observeFrame(sock, ev.data);
+                if (!WsHub.sockets.includes(sock) && ev.data.startsWith("40/notifications")) {
+                    WsHub.arm(sock);
+                }
                 const head = ev.data.slice(0, 64);
                 if (head.includes('"init"') || head.includes('"authorized"')) {
                     markBalanceDirty();
                     scheduleBalanceReassert();
                 }
-                if (ev.data.includes('"balance"')) markBalanceDirty(0.8);
                 captureServerFrame(sock, ev.data);
             } catch (e) { dbg("WS_MSG_ERR", String(e)); }
         });
@@ -1469,6 +1204,7 @@
         default_balance_type: 105, wallet_ids: {}, session_hash: "" };
 
     let ACTIVE_COIN = null;
+    let SPOOF_COIN = 103;
     let REAL_BAL_TEMPLATE = [];
     let BAL_SEQ = 100000;
     let NONCE = 1000;
@@ -1523,10 +1259,15 @@
     function nextNonce() { return ++NONCE; }
 
     function spoofRow(coinId, usdTotal, uid, name = null, allowZero = false) {
-        let usd = fVal(usdTotal, 0.0);
-        if (!(usd > 0)) usd = allowZero ? 0.0 : 0.01;
-        const native = Store.usdToNative(usd, coinId);
-        const baseCoins = Store.usdToBaseCoins(usd);
+        try {
+            if (parseFloat(usdTotal) <= 0 && !allowZero) {
+                dbg("ZERO_BALANCE_BLOCKED", { coin: coinId });
+                usdTotal = 0.01;
+            }
+        } catch (_) { usdTotal = allowZero ? 0.0 : 0.01; }
+        if (!isFinite(usdTotal)) usdTotal = allowZero ? 0.0 : 0.01;
+        const native = Store.usdToNative(usdTotal, coinId);
+        const baseCoins = Store.usdToBaseCoins(usdTotal);
         return {
             user_id: uid,
             balance_type: coinId,
@@ -1540,39 +1281,35 @@
     }
 
     function activeCoinId() {
-        if (ACTIVE_COIN) return ACTIVE_COIN;
-        const remembered = parseInt(Store.read().active_coin, 10);
-        if (isFinite(remembered) && remembered > 0) { ACTIVE_COIN = remembered; return ACTIVE_COIN; }
-        const dflt = parseInt(USER.default_balance_type, 10);
-        if (isFinite(dflt) && dflt > 0) return dflt;
-        ACTIVE_COIN = 103;
-        return ACTIVE_COIN;
+        if (ACTIVE_COIN) return parseInt(ACTIVE_COIN, 10);
+        if (SPOOF_COIN) return parseInt(SPOOF_COIN, 10);
+        const remembered = Store.read().active_coin;
+        if (remembered) { ACTIVE_COIN = parseInt(remembered, 10); return ACTIVE_COIN; }
+        return parseInt(USER.default_balance_type || 105, 10);
     }
     function setActiveCoin(coinId) {
         coinId = parseInt(coinId, 10);
-        if (!isFinite(coinId) || coinId <= 0 || ACTIVE_COIN === coinId) return;
+        if (!isFinite(coinId) || ACTIVE_COIN === coinId) return;
         ACTIVE_COIN = coinId;
+        BalCache.v = null; BalCache.t = 0.0;
         Store.update(s => { s.active_coin = coinId; });
     }
 
-    function selectCoin(coinId) {
+    function setSpoofCoin(coinId) {
         coinId = parseInt(coinId, 10);
         if (!isFinite(coinId) || coinId <= 0) return;
+        SPOOF_COIN = coinId;
         ACTIVE_COIN = coinId;
-        Store.update(s => { s.active_coin = coinId; s.spoof_coin = coinId; });
-        BalCache.cid = null; BalCache.v = null; BalCache.t = 0.0;
+        BalCache.v = null; BalCache.t = 0.0;
+        Store.update(s => { s.spoof_coin = coinId; s.active_coin = coinId; });
         lastDeliveredBal[0] = null;
         pushBalanceAfterBet();
-        DomLock.headerNodes.clear();
         try { Panel.refresh(); } catch (_) { }
-        dbg("SELECT_COIN", { coin: coinId, name: Store.currencyName(coinId), usd: Math.round(balUsd(coinId) * 100) / 100 });
+        dbg("SPOOF_COIN", { coin: coinId, name: Store.currencyName(coinId) });
     }
-
-    function setSpoofCoin(coinId) { selectCoin(coinId); }
 
     function applySpoof(realRows, uid = null) {
         if (uid === null) uid = USER.id || 0;
-        const active = activeCoinId();
         Store.learnCurrencyNames(realRows);
         if (realRows && realRows.length) {
             const genuine = realRows.filter(r => r && r.balance_type !== undefined && r.balance_type !== null).map(r => Object.assign({}, r));
@@ -1588,20 +1325,22 @@
         for (const r of (realRows || [])) {
             if (!r || r.balance_type === null || r.balance_type === undefined) continue;
             const cid = parseInt(r.balance_type, 10);
-            if (!isFinite(cid)) continue;
+            if (seen.has(cid)) continue;
             seen.add(cid);
             const merged = Object.assign({}, r);
-            Object.assign(merged, spoofRow(cid, Store.balOf(cid), uid, r.balance_type_name, cid !== active));
+            Object.assign(merged, spoofRow(cid, coinBalance(cid), uid, r.balance_type_name, true));
             rows.push(merged);
         }
-        for (const [k, v] of Object.entries(Store.balancesMap())) {
+        const map = Store.coinMap();
+        for (const k of Object.keys(map)) {
             const cid = parseInt(k, 10);
             if (!isFinite(cid) || seen.has(cid)) continue;
-            const usd = fVal(v);
-            if (usd <= 0) continue;
-            rows.push(spoofRow(cid, usd, uid, null, cid !== active));
+            const v = fVal(map[k]);
+            if (v <= 0) continue;
+            seen.add(cid);
+            rows.push(spoofRow(cid, v, uid));
         }
-        if (!rows.length) rows.push(spoofRow(active, Store.balOf(active), uid, null, false));
+        if (!rows.length) rows.push(spoofRow(currentCoinId(), balUsd(), uid));
         return rows;
     }
 
@@ -1614,7 +1353,7 @@
         }
     }
 
-    function spoofedBalanceRows(usdTotal = null, uid = null) {
+    function spoofedBalanceRows(uid = null) {
         if (!REAL_BAL_TEMPLATE || !REAL_BAL_TEMPLATE.length) restoreWalletRows();
         return applySpoof(REAL_BAL_TEMPLATE || [], uid);
     }
@@ -1628,18 +1367,6 @@
             if (d.kind === "withdraw") wd += usd; else dep += usd;
         }
         return [Math.round(dep * 100), Math.round(wd * 100)];
-    }
-
-    function patchRowObject(o, ref) {
-        const cid = parseInt(o && o.balance_type, 10);
-        if (!isFinite(cid) || cid <= 0) return;
-        const usd = Store.balOf(cid);
-        const native = Store.usdToNative(usd, cid);
-        o.balance = fmtNative(native);
-        o.cashoutable_balance = fmtNative(native);
-        o.balance_coins = fmtCoins(usd);
-        o.balance_coins_value = fmtCoins(usd);
-        if (ref) ref.changed = true;
     }
 
     function patchUserModel(model) {
@@ -1656,7 +1383,7 @@
         }
         const seq = bumpBalSeq();
         model.balance = seq;
-        model.default_balance_type = activeCoinId();
+        if (SPOOF_COIN) model.default_balance_type = SPOOF_COIN;
         model.balances = applySpoof(model.balances || [], uid);
         model.cashoutable_balance = seq;
         const [depC, wdC] = fakeDepositTotalsCents();
@@ -1735,21 +1462,18 @@
     function pushBalanceBurst() {
         pushBalanceAfterBet();
         markBalanceDirty(1.5);
-        DomLock.push(activeCoinId(), balUsd());
-        DomLock.syncHeader();
-        for (const d of [120, 280, 600]) {
+        for (const d of [120, 280]) {
             setTimeout(() => { try { pushBalanceAfterBet(); } catch (_) { } }, d);
         }
     }
 
     function reconcileBalance() {
-        if (!Store.enabled || !ENABLE_PATCHER) return;
+        if (!Store.enabled || !ENABLE_PATCHER || !WsHub.sockets.length) return;
         const usd = balUsd();
         const delivered = lastDeliveredBal[0];
-        const socketFresh = delivered !== null && Math.abs(delivered - usd) < 1e-9;
-        if (socketFresh && DomLock.headerShows(usd)) return;
-        deliverBalance(usd);
-        DomLock.syncHeader();
+        const fresh = delivered !== null && Math.abs(delivered - usd) < 1e-9;
+        if (fresh && pushQueuedAt <= nowSecs() && nowSecs() >= balDirtyUntil) return;
+        pushBalanceAfterBet();
     }
 
     function scheduleBalanceReassert() {
@@ -1762,16 +1486,14 @@
     }
 
     function creditAfter(usd, secs, coinId = null) {
-        let coin = (coinId === null || coinId === undefined) ? activeCoinId() : parseInt(coinId, 10);
-        if (!isFinite(coin) || coin <= 0) coin = activeCoinId();
-        const amount = fVal(usd);
-        if (!(amount > 0)) { pushBalanceAfterBet(); return; }
+        if (usd <= 0) { pushBalanceAfterBet(); return; }
         setTimeout(() => {
             try {
-                adjBal(amount, coin);
+                if (coinId !== null && coinId !== undefined) adjustCoinBalance(coinId, usd);
+                else adjBal(usd);
                 pushBalanceBurst();
             } catch (_) { }
-        }, Math.max(0, fVal(secs)) * 1000);
+        }, secs * 1000);
     }
     function pushBalanceDelayed(secs) {
         setTimeout(() => { try { pushBalanceAfterBet(); } catch (_) { } }, secs * 1000);
@@ -1784,7 +1506,6 @@
         if (!parsed) return null;
         const { event, ns, payload } = parsed;
         if (!payload || typeof payload !== "object") return null;
-        if (Array.isArray(payload)) return null;
 
         let changed = false;
 
@@ -1797,25 +1518,25 @@
             payload.balances = applySpoof(payload.balances || []);
             payload.balance = bumpBalSeq();
             changed = true;
-        } else if (!model) {
-            payload.balances = spoofedBalanceRows();
-            payload.balance = bumpBalSeq();
-            changed = true;
         }
         if (changed) {
             try {
                 const shown = payload.balances || (payload.model || {}).balances || [];
-                const want = activeCoinId();
+                const want = currentCoinId();
+                let funded = -1.0;
                 for (const row of shown) {
-                    if (parseInt(row.balance_type, 10) === want) {
-                        DomLock.lastUsd = fVal(row.balance_coins);
-                        DomLock.lastNative = fVal(row.balance);
-                        DomLock.schedule();
-                        break;
-                    }
+                    try {
+                        if (parseInt(row.balance_type, 10) === want) { funded = fVal(row.balance_coins); break; }
+                    } catch (_) { continue; }
                 }
+                BAL_TRACE.push([timeStr(), ns, String(event), Math.round(funded * 100) / 100, shown.length]);
+                if (BAL_TRACE.length > 40) BAL_TRACE.splice(0, BAL_TRACE.length - 40);
+                if (funded <= 0) dbg("BAL_PATCHED_ZERO", { ns, event: String(event).slice(0, 40), coin: want, coins: shown.length });
             } catch (_) { }
             return packSio(ns, event, payload, parsed.rest, parsed.ack);
+        }
+        if (text.includes('"balances"')) {
+            dbg("BAL_FRAME_UNPATCHED", { ns, event: String(event).slice(0, 40), len: text.length });
         }
         return null;
     }
@@ -1834,7 +1555,7 @@
     function makeDepositFrame(dep, confirmed) {
         const crypto = String(dep.crypto || "USDT").toUpperCase().trim() || "USDT";
         const coinId = depCoinId(dep);
-        const rateId = coinId !== null ? coinId : activeCoinId();
+        const rateId = coinId !== null ? coinId : currentCoinId();
         const usd = fVal(dep.usd);
         const native = coinId !== null ? Store.usdToNative(usd, coinId) : usd;
         const txHash = dep.tx_id || randTxHash(crypto);
@@ -1956,8 +1677,8 @@
 
             if (kind === "deposit" && !dep.credited) {
                 const cid = depCoinId(dep);
-                adjBal(fVal(dep.usd), cid);
-                if (cid !== null) setActiveCoin(cid);
+                if (cid !== null) adjustCoinBalance(cid, fVal(dep.usd));
+                else adjBal(fVal(dep.usd));
             }
             if (live) {
                 const frame = kind === "withdraw" ? makeWithdrawFrame(dep, true) : makeDepositFrame(dep, true);
@@ -1977,12 +1698,11 @@
         const stale = (state.deposits || []).filter(d => d.id && !d.confirmed_notified);
         if (!stale.length) return;
         const ids = new Set(stale.map(d => d.id));
-        const credits = {};
         for (const d of stale) {
             if ((d.kind || "deposit") !== "deposit" || d.credited) continue;
             const cid = depCoinId(d);
-            if (cid === null) continue;
-            credits[cid] = fVal(credits[cid]) + fVal(d.usd);
+            if (cid !== null) adjustCoinBalance(cid, fVal(d.usd));
+            else adjBal(fVal(d.usd));
         }
         Store.update(s => {
             for (const d of (s.deposits || [])) {
@@ -1994,32 +1714,28 @@
                 }
             }
         });
-        let total = 0.0;
-        for (const [cid, amt] of Object.entries(credits)) {
-            if (amt > 0) { adjBal(amt, parseInt(cid, 10)); total += amt; }
-        }
         for (const did of ids) { DEPOSIT_NOTIFIED_PENDING.add(did); DEPOSIT_NOTIFIED_CONFIRMED.add(did); }
-        dbg("DEPOSITS_RETIRED", { n: stale.length, credited: Math.round(total * 100) / 100 });
+        dbg("DEPOSITS_RETIRED", { n: stale.length });
     }
 
     const ACTIVE_ROUNDS = new Map();
     const FEED_ROWS = [];
     const FEED_MAX = 40;
 
-    function recordGame(gameKey, wagerUsd, profitUsd, coinId = null) {
+    function recordGame(gameKey, wagerUsd, profitUsd) {
         wagerUsd = parseFloat(wagerUsd); profitUsd = parseFloat(profitUsd);
         if (!isFinite(wagerUsd)) wagerUsd = 0;
         if (!isFinite(profitUsd)) profitUsd = 0;
         if (wagerUsd <= 0 && profitUsd === 0) return;
-        const coin = (coinId === null) ? activeCoinId() : parseInt(coinId, 10);
+        const coinId = currentCoinId();
         const wonUsd = wagerUsd + profitUsd;
-        const balAfter = balUsd(coin);
+        const balAfter = balUsd();
         const balBefore = balAfter - profitUsd;
         const now = nowSecs();
         const tx = {
             key: gameKey,
             label: GAME_LABEL[gameKey] || "Bet",
-            coin: coin,
+            coin: coinId,
             wager: Math.round(wagerUsd * 1e6) / 1e6,
             won: Math.round(Math.max(0, wonUsd) * 1e6) / 1e6,
             bal_before: Math.round(balBefore * 1e6) / 1e6,
@@ -2041,30 +1757,23 @@
         feedPublish(tx);
     }
 
-    function settle(stakeUsd, wonUsd, count = 1, game = null, coinId = null) {
-        let coin = (coinId === null || coinId === undefined) ? activeCoinId() : parseInt(coinId, 10);
-        if (!isFinite(coin) || coin <= 0) coin = activeCoinId();
-        const stake = fVal(stakeUsd);
-        const won = fVal(wonUsd);
-        if (stake > 0) wager(stake, count);
-        const net = won - stake;
-        if (game) recordGame(game, stake, net, coin);
-        if (net !== 0) adjBal(net, coin);
+    function settle(stakeUsd, wonUsd, count = 1, game = null) {
+        if (stakeUsd > 0) wager(stakeUsd, count);
+        const net = parseFloat(wonUsd) - parseFloat(stakeUsd);
+        if (game) recordGame(game, stakeUsd, net);
+        adjBal(net);
         pushBalanceBurst();
     }
 
-    function settleSplit(stakeUsd, wonUsd, revealSecs, count = 1, game = null, coinId = null) {
-        let coin = (coinId === null || coinId === undefined) ? activeCoinId() : parseInt(coinId, 10);
-        if (!isFinite(coin) || coin <= 0) coin = activeCoinId();
-        const stake = fVal(stakeUsd);
-        const won = fVal(wonUsd);
-        if (stake > 0) {
-            wager(stake, count);
-            adjBal(-stake, coin);
+    function settleSplit(stakeUsd, wonUsd, revealSecs, count = 1, game = null) {
+        if (stakeUsd > 0) wager(stakeUsd, count);
+        const net = parseFloat(wonUsd) - parseFloat(stakeUsd);
+        if (game) recordGame(game, stakeUsd, net);
+        if (stakeUsd > 0) {
+            adjBal(-stakeUsd);
+            pushBalanceBurst();
         }
-        if (game) recordGame(game, stake, won - stake, coin);
-        if (won > 0) creditAfter(won, revealSecs, coin);
-        else pushBalanceAfterBet();
+        if (wonUsd > 0) creditAfter(wonUsd, revealSecs);
     }
 
     async function readInitBodyRaw(init, input) {
@@ -2087,70 +1796,11 @@
         try { return JSON.parse(raw); } catch (_) { return {}; }
     }
 
-    function coinFromBody(body) {
-        const fallback = activeCoinId();
-        if (!body || typeof body !== "object") return fallback;
-        const cands = [body.currency, body.balance_type, body.balanceType, body.currency_id,
-            body.currencyId, body.coin, body.ticker, body.bet_currency];
-        for (const raw of cands) {
-            if (raw === undefined || raw === null || raw === "") continue;
-            if (typeof raw === "object") continue;
-            const s = String(raw).trim();
-            if (!s) continue;
-            if (/^\d+$/.test(s)) {
-                const n = parseInt(s, 10);
-                if (isFinite(n) && n > 0) return n;
-                continue;
-            }
-            const byName = Store.currencyId(s);
-            if (byName !== null && isFinite(byName) && byName > 0) return byName;
-        }
-        return fallback;
-    }
-
-    function stakeNativeFromBody(body) {
-        if (!body || typeof body !== "object") return 0;
-        const cands = [body.amount, body.amount_currency, body.amountCurrency,
-            body.bet_amount, body.betAmount, body.stake, body.wager, body.bet,
-            body.amount_native, body.amountNative, body.bet_coins, body.betCoins,
-            body.amount_coins, body.amountCoins, body.amountCurrencyCoins];
-        const read = (raw) => {
-            if (raw === undefined || raw === null || raw === "") return 0;
-            if (typeof raw === "object") {
-                for (const k of ["amount", "amount_currency", "amountCurrency", "bet_amount",
-                    "betAmount", "stake", "value"]) {
-                    const v = read(raw[k]);
-                    if (v > 0) return v;
-                }
-                return 0;
-            }
-            const v = parseFloat(raw);
-            return (isFinite(v) && v > 0) ? v : 0;
-        };
-        for (const c of cands) {
-            const v = read(c);
-            if (v > 0) return v;
-        }
-        return 0;
-    }
-
-    function nativeToUsdOr(native, coinId) {
-        native = parseFloat(native);
-        if (!isFinite(native) || native <= 0) return 0;
-        const usd = Store.nativeToUsd(native, coinId);
-        if (usd > 0) return usd;
-        const price = fVal(DEPOSIT_PRICES[Store.currencyName(coinId)], 0);
-        if (price > 0) return native * price;
-        return native;
-    }
-
     function betContextFromBody(body) {
-        let coinId = coinFromBody(body);
-        if (!isFinite(coinId) || coinId <= 0) coinId = activeCoinId();
-        const native = stakeNativeFromBody(body);
-        const usd = nativeToUsdOr(native, coinId);
-        if (ACTIVE_COIN !== coinId) setActiveCoin(coinId);
-        if (!(usd > 0)) dbg("STAKE_ZERO", { coin: coinId, native, body: JSON.stringify(body || {}).slice(0, 180) });
+        const coinId = parseInt(body.currency || body.balance_type || USER.default_balance_type || 105, 10) || 105;
+        setActiveCoin(coinId);
+        const native = fVal(body.amount);
+        const usd = Store.nativeToUsd(native, coinId);
         return { body, coinId, native, usd };
     }
 
@@ -2168,7 +1818,7 @@
         else roll = betType === "over" ? randInt(0, target) : randInt(target, 9999);
         const stakeUsd = c.usd;
         const wonUsd = isWin ? stakeUsd * multiplier : 0.0;
-        settleSplit(stakeUsd, wonUsd, DICE_REVEAL_SECS, 1, GAME_DICE, c.coinId);
+        settleSplit(stakeUsd, wonUsd, DICE_REVEAL_SECS, 1, GAME_DICE);
         const wonNative = isWin ? Store.usdToNative(wonUsd, c.coinId) : 0.0;
         return { success: true, data: { round: {
             id: randRoundId(),
@@ -2200,7 +1850,7 @@
         const isWin = resultMult >= target;
         const stakeUsd = c.usd;
         const wonUsd = isWin ? stakeUsd * target : 0.0;
-        settleSplit(stakeUsd, wonUsd, LIMBO_REVEAL_SECS, 1, GAME_LIMBO, c.coinId);
+        settleSplit(stakeUsd, wonUsd, LIMBO_REVEAL_SECS, 1, GAME_LIMBO);
         const wonNative = isWin ? Store.usdToNative(wonUsd, c.coinId) : 0.0;
         return { success: true, data: { round: {
             id: randRoundId(),
@@ -2251,7 +1901,7 @@
         const stakeUsd = c.usd;
         const wonUsd = stakeUsd * multiplier;
         const isWin = wonUsd > 0;
-        settleSplit(stakeUsd, wonUsd, KENO_REVEAL_SECS, 1, GAME_KENO, c.coinId);
+        settleSplit(stakeUsd, wonUsd, KENO_REVEAL_SECS, 1, GAME_KENO);
         const wonNative = Store.usdToNative(wonUsd, c.coinId);
         return { success: true, data: {
             id: randRoundId(),
@@ -2304,15 +1954,15 @@
         const stakeUsd = c.usd;
         const wonUsd = stakeUsd * multiplier;
         if (stakeUsd > 0) wager(stakeUsd);
-        recordGame(GAME_PLINKO, stakeUsd, wonUsd - stakeUsd, c.coinId);
+        recordGame(GAME_PLINKO, stakeUsd, wonUsd - stakeUsd);
         if (stakeUsd > 0) {
-            adjBal(-stakeUsd, c.coinId);
+            adjBal(-stakeUsd);
             pushBalanceAfterBet();
         }
         if (c.body.instant) {
-            if (wonUsd > 0) { adjBal(wonUsd, c.coinId); pushBalanceAfterBet(); }
+            if (wonUsd > 0) { adjBal(wonUsd); pushBalanceAfterBet(); }
         } else {
-            creditAfter(wonUsd, plinkoRevealSecs(rows), c.coinId);
+            creditAfter(wonUsd, plinkoRevealSecs(rows));
         }
         const wonNative = Store.usdToNative(wonUsd, c.coinId);
         const stakeNative = c.native;
@@ -2359,7 +2009,7 @@
         let minesCount = Math.max(1, Math.min(24, iVal(c.body.mines_count, 3)));
         const roundId = randRoundId();
         const stakeUsd = c.usd;
-        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd, c.coinId); }
+        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd); }
         ACTIVE_ROUNDS.set(roundId, {
             game: "mines", mines_count: minesCount, grid: 25, revealed: [],
             coinId: c.coinId, nativeStake: c.native, usdStake: stakeUsd, created: nowSecs(),
@@ -2416,7 +2066,7 @@
             const available = shuffle(Array.from({ length: grid }, (_, i) => i)
                 .filter(i => !revealed.includes(i) && i !== position));
             const minesPos = [position, ...available.slice(0, minesCount - 1)].sort((a, b) => a - b);
-            recordGame(GAME_MINES, st.usdStake, -st.usdStake, st.coinId);
+            recordGame(GAME_MINES, st.usdStake, -st.usdStake);
             ACTIVE_ROUNDS.delete(roundId);
             pushBalanceAfterBet();
             return { success: true, data: { round: {
@@ -2468,8 +2118,8 @@
         const curMult = minesMultiplier(revealed.length, minesCount);
         const stakeUsd = st.usdStake;
         const wonUsd = stakeUsd * curMult;
-        recordGame(GAME_MINES, stakeUsd, wonUsd - stakeUsd, st.coinId);
-        adjBal(wonUsd, st.coinId);
+        recordGame(GAME_MINES, stakeUsd, wonUsd - stakeUsd);
+        adjBal(wonUsd);
         pushBalanceAfterBet();
         const available = shuffle(Array.from({ length: grid }, (_, i) => i).filter(i => !revealed.includes(i)));
         const minesPos = available.slice(0, minesCount).sort((a, b) => a - b);
@@ -2511,7 +2161,7 @@
         const difficulty = Math.max(1, Math.min(4, iVal(c.body.difficulty, 2)));
         const roundId = randRoundId();
         const stakeUsd = c.usd;
-        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd, c.coinId); }
+        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd); }
         ACTIVE_ROUNDS.set(roundId, {
             game: "cross-road", difficulty, path_length: 20, steps: [],
             coinId: c.coinId, nativeStake: c.native, usdStake: stakeUsd, created: nowSecs(),
@@ -2553,7 +2203,7 @@
             const available = shuffle(Array.from({ length: pathLen }, (_, i) => i));
             const numMines = Math.max(1, Math.floor(pathLen / 5));
             const minesPos = available.slice(0, numMines).sort((a, b) => a - b);
-            recordGame(GAME_CROSSROAD, st.usdStake, -st.usdStake, st.coinId);
+            recordGame(GAME_CROSSROAD, st.usdStake, -st.usdStake);
             ACTIVE_ROUNDS.delete(roundId);
             pushBalanceAfterBet();
             return { success: true, data: { round: {
@@ -2608,8 +2258,8 @@
         const curMult = crossRoadMultiplier(st.steps.length, difficulty);
         const stakeUsd = st.usdStake;
         const wonUsd = stakeUsd * curMult;
-        recordGame(GAME_CROSSROAD, stakeUsd, wonUsd - stakeUsd, st.coinId);
-        adjBal(wonUsd, st.coinId);
+        recordGame(GAME_CROSSROAD, stakeUsd, wonUsd - stakeUsd);
+        adjBal(wonUsd);
         pushBalanceAfterBet();
         const pathLen = st.path_length;
         const available = shuffle(Array.from({ length: pathLen }, (_, i) => i).filter(i => !st.steps.includes(i)));
@@ -2751,7 +2401,7 @@
         const payout = staked * fVal(st.payout_ratio, 0);
         if (!st._booked) {
             st._booked = true;
-            recordGame(GAME_BLACKJACK, staked, payout - staked, st.coinId);
+            recordGame(GAME_BLACKJACK, staked, payout - staked);
         }
         return payout;
     }
@@ -2760,7 +2410,7 @@
         const c = betContextFromBody(ctx.body);
         const roundId = randRoundId();
         const stakeUsd = c.usd;
-        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd, c.coinId); }
+        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd); }
         const shoe = bjNewShoe();
         const player = [
             { rank: shoe[0][0], suit: shoe[0][1], face_down: false },
@@ -2810,7 +2460,7 @@
             return bjResponseBody(roundId, st, true, true, true);
         }
         if (action === "double") {
-            adjBal(-stakeUsd, st.coinId);
+            adjBal(-stakeUsd);
             wager(stakeUsd);
             st.total_staked_usd = fVal(st.total_staked_usd, stakeUsd) + stakeUsd;
             st.doubled = true;
@@ -2876,7 +2526,7 @@
         const c = betContextFromBody(ctx.body);
         const roundId = randRoundId();
         const stakeUsd = c.usd;
-        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd, c.coinId); }
+        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd); }
         const deck = vpNewDeck();
         const initial = deck.slice(0, 5);
         const remaining = deck.slice(5);
@@ -2911,7 +2561,7 @@
         } };
     }
 
-function patchVideoPokerDraw(ctx, roundId) {
+    function patchVideoPokerDraw(ctx, roundId) {
         let st = ACTIVE_ROUNDS.get(roundId);
         if (!st || st.game !== "video-poker") {
             return { __status: 400, body: { success: false, message: "no active round" } };
@@ -2927,8 +2577,8 @@ function patchVideoPokerDraw(ctx, roundId) {
         const [handName, multiplier] = vpEvaluate(finalCards);
         const stakeUsd = st.usdStake;
         const wonUsd = stakeUsd * multiplier;
-        recordGame(GAME_VIDEOPOKER, stakeUsd, wonUsd - stakeUsd, st.coinId);
-        if (wonUsd > 0) adjBal(wonUsd, st.coinId);
+        recordGame(GAME_VIDEOPOKER, stakeUsd, wonUsd - stakeUsd);
+        if (wonUsd > 0) adjBal(wonUsd);
         pushBalanceAfterBet();
         ACTIVE_ROUNDS.delete(roundId);
         const wonNative = wonUsd > 0 ? Store.usdToNative(wonUsd, st.coinId) : 0.0;
@@ -2953,7 +2603,7 @@ function patchVideoPokerDraw(ctx, roundId) {
         } };
     }
 
-    const GROOMERS_EMBEDDED = [{"spin_id":7144665,"spin_type":"base_game","bet_amount":"0.200006","bet_amount_currency":"0.000104044197975200","balance_type":103,"total_win":"0.3","total_win_currency":"0.0001560662969628","total_multiplier":"1.5","feature_triggered":false,"respin_data":{"respin_triggered":false,"scatter_positions":null,"awarded_spins":null},"rounds":[],"feature_status":null,"max_win_reached":false,"edge_multiplier":"1","amount_won_coins":"0.3","amount_won":"0.0001560662969628"},{"spin_id":7144666,"spin_type":"base_game","bet_amount":"0.200008","bet_amount_currency":"0.000104044197975200","balance_type":103,"total_win":"0","total_win_currency":"0","total_multiplier":"0","feature_triggered":false,"respin_data":{"respin_triggered":false,"scatter_positions":null,"awarded_spins":null},"rounds":[],"feature_status":null,"max_win_reached":false,"edge_multiplier":"1","amount_won_coins":"0","amount_won":"0"},{"spin_id":7144669,"spin_type":"base_game","bet_amount":"0.200006","bet_amount_currency":"0.000104044197975200","balance_type":103,"total_win":"0.22","total_win_currency":"0.00011444861777272","total_multiplier":"1.1","feature_triggered":false,"respin_data":{"respin_triggered":false,"scatter_positions":null,"awarded_spins":null},"rounds":[],"feature_status":null,"max_win_reached":false,"edge_multiplier":"1","amount_won_coins":"0.22","amount_won":"0.00011444861777272"}];
+    const GROOMERS_EMBEDDED = [{"spin_id":7144665,"spin_type":"base_game","bet_amount":"0.200006","bet_amount_currency":"0.000104044197975200","balance_type":103,"total_win":"0.3","total_win_currency":"0.0001560662969628","total_multiplier":"1.5","feature_triggered":false,"respin_data":{"respin_triggered":false,"scatter_positions":null,"awarded_spins":null},"rounds":[{"id":0,"type":"regular","data":{"spin_multiplier":"0.5","view":[[{"uuid":"858a7cfe-da75-47b6-aa28-02efe5da2269","id":372224252,"symbol":"symbol_3","index":0,"round":0,"removed_on_round":null,"position":0,"type":"common","multiplier_value":null},{"uuid":"abab0c87-ac87-45bf-ad90-be43ab810dd5","id":372224253,"symbol":"symbol_2","index":1,"round":0,"removed_on_round":1,"position":1,"type":"common","multiplier_value":null},{"uuid":"d3b3f31c-f031-438c-adfa-e69910966403","id":372224254,"symbol":"symbol_4","index":2,"round":0,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"644b18c4-ed57-4edb-b329-92770b243f2e","id":372224255,"symbol":"symbol_4","index":3,"round":0,"removed_on_round":null,"position":3,"type":"common","multiplier_value":null},{"uuid":"c2cfb7cf-1d36-4f1b-b71d-61893d0a089f","id":372224256,"symbol":"symbol新_8","index":4,"round":0,"removed_on_round":null,"position":4,"type":"epic","multiplier_value":null}],[{"uuid":"bce033d5-9a6b-4100-af58-232042a020e4","id":372224257,"symbol":"symbol_1","index":0,"round":0,"removed_on_round":null,"position":5,"type":"common","multiplier_value":null},{"uuid":"39cf0ce4-5d9f-4620-97d4-87f6ba59169f","id":372224258,"symbol":"symbol_1","index":1,"round":0,"removed_on_round":null,"position":6,"type":"common","multiplier_value":null},{"uuid":"e0b27085-1f5d-4397-9ea2-a7bec5ef1ba7","id":372224259,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":1,"position":7,"type":"common","multiplier_value":null},{"uuid":"26175a7d-2290-4a99-a9a1-de224766c3cd","id":372224260,"symbol":"symbol_2","index":3,"round":0,"removed_on_round":1,"position":8,"type":"common","multiplier_value":null},{"uuid":"ed7b1d89-f492-4efc-b8de-98bb090efdad","id":372224261,"symbol":"symbol_9","index":4,"round":0,"removed_on_round":null,"position":9,"type":"premium","multiplier_value":null}],[{"uuid":"16d78a97-9a8c-4be0-830d-a3a6eea66461","id":372224262,"symbol":"symbol_8","index":0,"round":0,"removed_on_round":null,"position":10,"type":"epic","multiplier_value":null},{"uuid":"57651bbc-9d9c-49e4-8973-a5f992156d2f","id":372224263,"symbol":"symbol_7","index":1,"round":0,"removed_on_round":null,"position":11,"type":"rare","multiplier_value":null},{"uuid":"d7d5a55a-7b07-498f-b9df-eb32275b8996","id":372224264,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":1,"position":12,"type":"common","multiplier_value":null},{"uuid":"1757f635-f57e-4919-b202-6aefa946710d","id":372224265,"symbol":"symbol_1","index":3,"round":0,"removed_on_round":null,"position":13,"type":"common","multiplier_value":null},{"uuid":"7ec0f378-86a0-4ad0-a7c4-fcfc8f1d9ada","id":372224266,"symbol":"symbol_6","index":4,"round":0,"removed_on_round":null,"position":14,"type":"rare","multiplier_value":null}],[{"uuid":"784eaba8-de9a-4439-8c45-d5b19b399d9a","id":372224267,"symbol":"symbol_1","index":0,"round":0,"removed_on_round":null,"position":15,"type":"common","multiplier_value":null},{"uuid":"9a7764a0-a493-46b1-bae0-ba9d012e9794","id":372224268,"symbol":"symbol_6","index":1,"round":0,"removed_on_round":null,"position":16,"type":"rare","multiplier_value":null},{"uuid":"174f5643-bad8-4770-b149-244468765ddd","id":372224269,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":1,"position":17,"type":"common","multiplier_value":null},{"uuid":"0f7f0313-5a22-4042-96cc-e2f69a30ead5","id":372224270,"symbol":"symbol_1","index":3,"round":0,"removed_on_round":null,"position":18,"type":"common","multiplier_value":null},{"uuid":"7f17542f-7296-4f8c-bf4c-5bec9bf8a713","id":372224271,"symbol":"symbol_2","index":4,"round":0,"removed_on_round":1,"position":19,"type":"common","multiplier_value":null}],[{"uuid":"7e0583a6-6de5-4582-9d3b-5d567519a402","id":372224272,"symbol":"symbol_1","index":0,"round":0,"removed_on_round":null,"position":20,"type":"common","multiplier_value":null},{"uuid":"7f14e718-efcc-4996-a7f2-2c862eafdeff","id":372224273,"symbol":"symbol_5","index":1,"round":0,"removed_on_round":null,"position":21,"type":"rare","multiplier_value":null},{"uuid":"6db439ce-9e5f-4449-a5e5-378a405fa59a","id":372224274,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":1,"position":22,"type":"common","multiplier_value":null},{"uuid":"1606fbea-5782-46b7-9957-f60f6b353a84","id":372224275,"symbol":"symbol_3","index":3,"round":0,"removed_on_round":null,"position":23,"type":"common","multiplier_value":null},{"uuid":"fd6c8ccd-db24-4058-a97e-d444ff805d1b","id":372224276,"symbol":"symbol_3","index":4,"round":0,"removed_on_round":null,"position":24,"type":"common","multiplier_value":null}],[{"uuid":"ac3a949c-03b0-4125-8983-6586162d661f","id":372224277,"symbol":"symbol_6","index":0,"round":0,"removed_on_round":null,"position":25,"type":"rare","multiplier_value":null},{"uuid":"f160aa87-422e-446c-acf8-04e4c2e3841e","id":372224278,"symbol":"symbol_7","index":1,"round":0,"removed_on_round":null,"position":26,"type":"rare","multiplier_value":null},{"uuid":"ec914b38-0f77-4a3c-98f4-9a34c3c9e8cd","id":372224279,"symbol":"symbol_1","index":2,"round":0,"removed_on_round":null,"position":27,"type":"common","multiplier_value":null},{"uuid":"0a29c327-e9d6-4170-a466-78b8edc9e3a6","id":372224280,"symbol":"symbol_2","index":3,"round":0,"removed_on_round":1,"position":28,"type":"common","multiplier_value":null},{"uuid":"823298ca-bb21-4a73-9f73-85ba47405208","id":372224281,"symbol":"symbol_8","index":4,"round":0,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[{"win_type":"cluster","identifier":"cluster_symbol_2_8","symbol":"symbol_2","symbol_name":"symbol_2","count":8,"multiplier":0.5,"payout_coins":"0.1","payout_currency":"0.0000520220989876","bomb_multiplier":0,"base_payout_coins":"0.1","base_payout_currency":"0.0000520220989876"}]}},{"id":1,"type":"tumble","data":{"spin_multiplier":"0.4","view":[[{"uuid":"0f11865f-c5e9-4d68-85bf-3330cffe0af8","id":372224304,"symbol":"symbol_3","index":0,"round":1,"removed_on_round":null,"position":0,"type":"common","multiplier_value":null},{"uuid":"858a7cfe-da75-47b6-aa28-02efe5da2269","id":372224282,"symbol":"symbol_3","index":1,"round":1,"removed_on_round":null,"position":1,"type":"common","multiplier_value":null},{"uuid":"d3b3f31c-f031-438c-adfa-e69910966403","id":372224283,"symbol":"symbol_4","index":2,"round":1,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"644b18c4-ed57-4edb-b329-92770b243f2e","id":372224284,"symbol":"symbol_4","index":3,"round":1,"removed_on_round":null,"position":3,"type":"common","multiplier_value":null},{"uuid":"c2cfb7cf-1d36-4f1b-b71d-61893d0a089f","id":372224285,"symbol":"symbol_8","index":4,"round":1,"removed_on_round":null,"position":4,"type":"epic","multiplier_value":null}],[{"uuid":"72be71f8-16ba-4804-ad8f-47169bb3a376","id":372224305,"symbol":"symbol_1","index":0,"round":1,"removed_on_round":2,"position":5,"type":"common","multiplier_value":null},{"uuid":"642b5209-335a-46b4-8740-1f7b123e5499","id":372224306,"symbol":"symbol_3","index":1,"round":1,"removed_on_round":null,"position":6,"type":"common","multiplier_value":null},{"uuid":"bce033d5-9a6b-4100-af58-232042a020e4","id":372224286,"symbol":"symbol_1","index":2,"round":1,"removed_on_round":2,"position":7,"type":"common","multiplier_value":null},{"uuid":"39cf0ce4-5d9f-4620-97d4-87f6ba59169f","id":372224287,"symbol":"symbol_1","index":3,"round":1,"removed_on_round":2,"position":8,"type":"common","multiplier_value":null},{"uuid":"ed7b1d89-f492-4efc-b8de-98bb090efdad","id":372224288,"symbol":"symbol_9","index":4,"round":1,"removed_on_round":null,"position":9,"type":"premium","multiplier_value":null}],[{"uuid":"54eab6a7-749c-47d3-a04d-3bc63f53f342","id":372224307,"symbol":"symbol_7","index":0,"round":1,"removed_on_round":null,"position":10,"type":"rare","multiplier_value":null},{"uuid":"16d78a97-9a8c-4be0-830d-a3a6eea66461","id":372224289,"symbol":"symbol_8","index":1,"round":1,"removed_on_round":null,"position":11,"type":"epic","multiplier_value":null},{"uuid":"57651bbc-9d9c-49e4-8973-a5f992156d2f","id":372224290,"symbol":"symbol_7","index":2,"round":1,"removed_on_round":null,"position":12,"type":"rare","multiplier_value":null},{"uuid":"1757f635-f57e-4919-b202-6aefa946710d","id":372224291,"symbol":"symbol_1","index":3,"round":1,"removed_on_round":2,"position":13,"type":"common","multiplier_value":null},{"uuid":"7ec0f378-86a0-4ad0-a7c4-fcfc8f1d9ada","id":372224292,"symbol":"symbol_6","index":4,"round":1,"removed_on_round":null,"position":14,"type":"rare","multiplier_value":null}],[{"uuid":"ab44af0a-22b5-4ff2-9ff9-65d5af6393bb","id":372224308,"symbol":"symbol_7","index":0,"round":1,"removed_on_round":null,"position":15,"type":"rare","multiplier_value":null},{"uuid":"37ae40a6-1fcc-48fb-a9e0-2ccc2adcc416","id":372224309,"symbol":"symbol_2","index":1,"round":1,"removed_on_round":null,"position":16,"type":"common","multiplier_value":null},{"uuid":"784eaba8-de9a-4439-8c45-d5b19b399d9a","id":372224293,"symbol":"symbol_1","index":2,"round":1,"removed_on_round":2,"position":17,"type":"common","multiplier_value":null},{"uuid":"9a7764a0-a493-46b1-bae0-ba9d012e9794","id":372224294,"symbol":"symbol_6","index":3,"round":1,"removed_on_round":null,"position":18,"type":"rare","multiplier_value":null},{"uuid":"0f7f0313-5a22-4042-96cc-e2f69a30ead5","id":372224295,"symbol":"symbol_1","index":4,"round":1,"removed_on_round":2,"position":19,"type":"common","multiplier_value":null}],[{"uuid":"ffa16f87-cdc1-41ef-861a-b82f3aece665","id":372224310,"symbol":"symbol_3","index":0,"round":1,"removed_on_round":null,"position":20,"type":"common","multiplier_value":null},{"uuid":"7e0583a6-6de5-4582-9d3b-5d567519a402","id":372224296,"symbol":"symbol_1","index":1,"round":1,"removed_on_round":2,"position":21,"type":"common","multiplier_value":null},{"uuid":"7f14e718-efcc-4996-a7f2-2c862eafdeff","id":372224297,"symbol":"symbol_5","index":2,"round":1,"removed_on_round":null,"position":22,"type":"rare","multiplier_value":null},{"uuid":"1606fbea-5782-46b7-9957-f60f6b353a84","id":372224298,"symbol":"symbol_3","index":3,"round":1,"removed_on_round":null,"position":23,"type":"common","multiplier_value":null},{"uuid":"fd6c8ccd-db24-4058-a97e-d444ff805d1b","id":372224299,"symbol":"symbol_3","index":4,"round":1,"removed_on_round":null,"position":24,"type":"common","multiplier_value":null}],[{"uuid":"2f8fb01d-e64e-454e-96ba-671dd5b4ee07","id":372224311,"symbol":"symbol_2","index":0,"round":1,"removed_on_round":null,"position":25,"type":"common","multiplier_value":null},{"uuid":"ac3a949c-03b0-4125-8983-6586162d661f","id":372224300,"symbol":"symbol_6","index":1,"round":1,"removed_on_round":null,"position":26,"type":"rare","multiplier_value":null},{"uuid":"f160aa87-422e-446c-acf8-04e4c2e3841e","id":372224301,"symbol":"symbol_7","index":2,"round":1,"removed_on_round":null,"position":27,"type":"rare","multiplier_value":null},{"uuid":"ec914b38-0f77-4a3c-98f4-9a34c3c9e8cd","id":372224302,"symbol":"symbol_1","index":3,"round":1,"removed_on_round":2,"position":28,"type":"common","multiplier_value":null},{"uuid":"823298ca-bb21-4a73-9f73-85ba47405208","id":372224303,"symbol":"symbol_8","index":4,"round":1,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[{"win_type":"cluster","identifier":"cluster_symbol_1_8","symbol":"symbol_1","symbol_name":"symbol_1","count":8,"multiplier":0.4,"payout_coins":"0.08","payout_currency":"0.00004161767919008","bomb_multiplier":0,"base_payout_coins":"0.08","base_payout_currency":"0.00004161767919008"}]}},{"id":2,"type":"tumble","data":{"spin_multiplier":"0.6","view":[[{"uuid":"0f11865f-c5e9-4d68-85bf-3330cffe0af8","id":372224312,"symbol":"symbol_3","index":0,"round":2,"removed_on_round":3,"position":0,"type":"common","multiplier_value":null},{"uuid":"858a7cfe-da75-47b6-aa28-02efe5da2269","id":372224313,"symbol":"symbol_3","index":1,"round":2,"removed_on_round":3,"position":1,"type":"common","multiplier_value":null},{"uuid":"d3b3f31c-f031-438c-adfa-e69910966403","id":372224314,"symbol":"symbol_4","index":2,"round":2,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"644b18c4-ed57-4edb-b329-92770b243f2e","id":372224315,"symbol":"symbol_4","index":3,"round":2,"removed_on_round":null,"position":3,"type":"common","multiplier_value":null},{"uuid":"c2cfb7cf-1d36-4f1b-b71d-61893d0a089f","id":372224316,"symbol":"symbol_8","index":4,"round":2,"removed_on_round":null,"position":4,"type":"epic","multiplier_value":null}],[{"uuid":"39b7b164-3920-4656-bfb9-f6bb834283a8","id":372224334,"symbol":"symbol_8","index":0,"round":2,"removed_on_round":null,"position":5,"type":"epic","multiplier_value":null},{"uuid":"25727e8d-6369-4239-9c62-0562c066391f","id":372224335,"symbol":"symbol_1","index":1,"round":2,"removed_on_round":null,"position":6,"type":"common","multiplier_value":null},{"uuid":"0790fdfd-77f3-4059-b5ff-c491b1c44a8f","id":372224336,"symbol":"symbol_1","index":2,"round":2,"removed_on_round":null,"position":7,"type":"common","multiplier_value":null},{"uuid":"642b5209-335a-46b4-8740-1f7b123e5499","id":372224317,"symbol":"symbol_3","index":3,"round":2,"removed_on_round":3,"position":8,"type":"common","multiplier_value":null},{"uuid":"ed7b1d89-f492-4efc-b8de-98bb090efdad","id":372224318,"symbol":"symbol_9","index":4,"round":2,"removed_on_round":null,"position":9,"type":"premium","multiplier_value":null}],[{"uuid":"12928f74-d33c-4f08-b183-99a948161332","id":372224337,"symbol":"symbol_2","index":0,"round":2,"removed_on_round":null,"position":10,"type":"common","multiplier_value":null},{"uuid":"54eab6a7-749c-47d3-a04d-3bc63f53f342","id":372224319,"symbol":"symbol_7","index":1,"round":2,"removed_on_round":null,"position":11,"type":"rare","multiplier_value":null},{"uuid":"16d78a97-9a8c-4be0-830d-a3a6eea66461","id":372224320,"symbol":"symbol_8","index":2,"round":2,"removed_on_round":null,"position":12,"type":"epic","multiplier_value":null},{"uuid":"57651bbc-9d9c-49e4-8973-a5f992156d2f","id":372224321,"symbol":"symbol_7","index":3,"round":2,"removed_on_round":null,"position":13,"type":"rare","multiplier_value":null},{"uuid":"7ec0f378-86a0-4ad0-a7c4-fcfc8f1d9ada","id":372224322,"symbol":"symbol_6","index":4,"round":2,"removed_on_round":null,"position":14,"type":"rare","multiplier_value":null}],[{"uuid":"69da8ee5-116d-4442-a764-547408a0545c","id":372224338,"symbol":"symbol_3","index":0,"round":2,"removed_on_round":3,"position":15,"type":"common","multiplier_value":null},{"uuid":"dd85ba45-e1a6-4997-81f2-ca217e04326a","id":372224339,"symbol":"symbol_7","index":1,"round":2,"removed_on_round":null,"position":16,"type":"rare","multiplier_value":null},{"uuid":"ab44af0a-22b5-4ff2-9ff9-65d5af6393bb","id":372224323,"symbol":"symbol_7","index":2,"round":2,"removed_on_round":null,"position":17,"type":"rare","multiplier_value":null},{"uuid":"37ae40a6-1fcc-48fb-a9e0-2ccc2adcc416","id":372224324,"symbol":"symbol_2","index":3,"round":2,"removed_on_round":null,"position":18,"type":"common","multiplier_value":null},{"uuid":"9a7764a0-a493-46b1-bae0-ba9d012e9794","id":372224325,"symbol":"symbol_6","index":4,"round":2,"removed_on_round":null,"position":19,"type":"rare","multiplier_value":null}],[{"uuid":"1cb781da-e45e-451f-8248-7af02ed8b78c","id":372224340,"symbol":"symbol_2","index":0,"round":2,"removed_on_round":null,"position":20,"type":"common","multiplier_value":null},{"uuid":"ffa16f87-cdc1-41ef-861a-b82f3aece665","id":372224326,"symbol":"symbol_3","index":1,"round":2,"removed_on_round":3,"position":21,"type":"common","multiplier_value":null},{"uuid":"7f14e718-efcc-4996-a7f2-2c862eafdeff","id":372224327,"symbol":"symbol_5","index":2,"round":2,"removed_on_round":null,"position":22,"type":"rare","multiplier_value":null},{"uuid":"1606fbea-5782-46b7-9957-f60f6b353a84","id":372224328,"symbol":"symbol_3","index":3,"round":2,"removed_on_round":3,"position":23,"type":"common","multiplier_value":null},{"uuid":"fd6c8ccd-db24-4058-a97e-d444ff805d1b","id":372224329,"symbol":"symbol_3","index":4,"round":2,"removed_on_round":3,"position":24,"type":"common","multiplier_value":null}],[{"uuid":"42552a57-ff32-43f5-bd54-3816deffb095","id":372224341,"symbol":"symbol_3","index":0,"round":2,"removed_on_round":3,"position":25,"type":"common","multiplier_value":null},{"uuid":"2f8fb01d-e64e-454e-96ba-671dd5b4ee07","id":372224330,"symbol":"symbol_2","index":1,"round":2,"removed_on_round":null,"position":26,"type":"common","multiplier_value":null},{"uuid":"ac3a949c-03b0-4125-8983-6586162d661f","id":372224331,"symbol":"symbol_6","index":2,"round":2,"removed_on_round":null,"position":27,"type":"rare","multiplier_value":null},{"uuid":"f160aa87-422e-446c-acf8-04e4c2e3841e","id":372224332,"symbol":"symbol_7","index":3,"round":2,"removed_on_round":null,"position":28,"type":"rare","multiplier_value":null},{"uuid":"823298ca-bb21-4a73-9f73-85ba47405208","id":372224333,"symbol":"symbol_8","index":4,"round":2,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[{"win_type":"cluster","identifier":"cluster_symbol_3_8","symbol":"symbol_3","symbol_name":"symbol_3","count":8,"multiplier":0.6,"payout_coins":"0.12","payout_currency":"0.00006242651878512","bomb_multiplier":0,"base_payout_coins":"0.12","base_payout_currency":"0.00006242651878512"}]}},{"id":3,"type":"tumble","data":{"spin_multiplier":"0","view":[[{"uuid":"19c10475-19ac-4008-b9bf-b8b6123394aa","id":372224364,"symbol":"symbol_1","index":0,"round":3,"removed_on_round":null,"position":0,"type":"common","multiplier_value":null},{"uuid":"25a7d581-8f9e-4e2d-b3e2-4cb0a42171c1","id":372224365,"symbol":"symbol_5","index":1,"round":3,"removed_on_round":null,"position":1,"type":"rare","multiplier_value":null},{"uuid":"d3b3f31c-f031-438c-adfa-e69910966403","id":372224342,"symbol":"symbol_4","index":2,"round":3,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"644b18c4-ed57-4edb-b329-92770b243f2e","id":372224343,"symbol":"symbol_4","index":3,"round":3,"removed_on_round":null,"position":3,"type":"common","multiplier_value":null},{"uuid":"c2cfb7cf-1d36-4f1b-b71d-61893d0a089f","id":372224344,"symbol":"symbol_8","index":4,"round":3,"removed_on_round":null,"position":4,"type":"epic","multiplier_value":null}],[{"uuid":"418d13f8-758a-441d-81f6-241387ad0d93","id":372224366,"symbol":"symbol_5","index":0,"round":3,"removed_on_round":null,"position":5,"type":"rare","multiplier_value":null},{"uuid":"39b7b164-3920-4656-bfb9-f6bb834283a8","id":372224345,"symbol":"symbol_8","index":1,"round":3,"removed_on_round":null,"position":6,"type":"epic","multiplier_value":null},{"uuid":"25727e8d-6369-4239-9c62-0562c066391f","id":372224346,"symbol":"symbol_1","index":2,"round":3,"removed_on_round":null,"position":7,"type":"common","multiplier_value":null},{"uuid":"0790fdfd-77f3-4059-b5ff-c491b1c44a8f","id":372224347,"symbol":"symbol_1","index":3,"round":3,"removed_on_round":null,"position":8,"type":"common","multiplier_value":null},{"uuid":"ed7b1d89-f492-4efc-b8de-98bb090efdad","id":372224348,"symbol":"symbol_9","index":4,"round":3,"removed_on_round":null,"position":9,"type":"premium","multiplier_value":null}],[{"uuid":"12928f74-d33c-4f08-b183-99a948161332","id":372224349,"symbol":"symbol_2","index":0,"round":3,"removed_on_round":null,"position":10,"type":"common","multiplier_value":null},{"uuid":"54eab6a7-749c-47d3-a04d-3bc63f53f342","id":372224350,"symbol":"symbol_7","index":1,"round":3,"removed_on_round":null,"position":11,"type":"rare","multiplier_value":null},{"uuid":"16d78a97-9a8c-4be0-830d-a3a6eea66461","id":372224351,"symbol":"symbol_8","index":2,"round":3,"removed_on_round":null,"position":12,"type":"epic","multiplier_value":null},{"uuid":"57651bbc-9d9c-49e4-8973-a5f992156d2f","id":372224352,"symbol":"symbol_7","index":3,"round":3,"removed_on_round":null,"position":13,"type":"rare","multiplier_value":null},{"uuid":"7ec0f378-86a0-4ad0-a7c4-fcfc8f1d9ada","id":372224353,"symbol":"symbol_6","index":4,"round":3,"removed_on_round":null,"position":14,"type":"rare","multiplier_value":null}],[{"uuid":"b92569df-e6e1-4bc7-971f-d66a580e126d","id":372224367,"symbol":"symbol_3","index":0,"round":3,"removed_on_round":null,"position":15,"type":"common","multiplier_value":null},{"uuid":"dd85ba45-e1a6-4997-81f2-ca217e04326a","id":372224354,"symbol":"symbol_7","index":1,"round":3,"removed_on_round":null,"position":16,"type":"rare","multiplier_value":null},{"uuid":"ab44af0a-22b5-4ff2-9ff9-65d5af6393bb","id":372224355,"symbol":"symbol_7","index":2,"round":3,"removed_on_round":null,"position":17,"type":"rare","multiplier_value":null},{"uuid":"37ae40a6-1fcc-48fb-a9e0-2ccc2adcc416","id":372224356,"symbol":"symbol_2","index":3,"round":3,"removed_on_round":null,"position":18,"type":"common","multiplier_value":null},{"uuid":"9a7764a0-a493-46b1-bae0-ba9d012e9794","id":372224357,"symbol":"symbol_6","index":4,"round":3,"removed_on_round":null,"position":19,"type":"rare","multiplier_value":null}],[{"uuid":"1ae1c1f3-54d0-414f-affd-14970943de89","id":372224368,"symbol":"symbol_7","index":0,"round":3,"removed_on_round":null,"position":20,"type":"rare","multiplier_value":null},{"uuid":"81727e59-542e-462b-b5cf-ad349becf97c","id":372224369,"symbol":"symbol_2","index":1,"round":3,"removed_on_round":null,"position":21,"type":"common","multiplier_value":null},{"uuid":"3c2f88dd-10c0-4fd5-97ef-39377fecc61c","id":372224370,"symbol":"symbol_2","index":2,"round":3,"removed_on_round":null,"position":22,"type":"common","multiplier_value":null},{"uuid":"1cb781da-e45e-451f-8248-7af02ed8b78c","id":372224358,"symbol":"symbol_2","index":3,"round":3,"removed_on_round":null,"position":23,"type":"common","multiplier_value":null},{"uuid":"7f14e718-efcc-4996-a7f2-2c862eafdeff","id":372224359,"symbol":"symbol_5","index":4,"round":3,"removed_on_round":null,"position":24,"type":"rare","multiplier_value":null}],[{"uuid":"bd58b26c-9791-4bc8-b5e2-5cc732039539","id":372224371,"symbol":"symbol_7","index":0,"round":3,"removed_on_round":null,"position":25,"type":"rare","multiplier_value":null},{"uuid":"2f8fb01d-e64e-454e-96ba-671dd5b4ee07","id":372224360,"symbol":"symbol_2","index":1,"round":3,"removed_on_round":null,"position":26,"type":"common","multiplier_value":null},{"uuid":"ac3a949c-03b0-4125-8983-6586162d661f","id":372224361,"symbol":"symbol_6","index":2,"round":3,"removed_on_round":null,"position":27,"type":"rare","multiplier_value":null},{"uuid":"f160aa87-422e-446c-acf8-04e4c2e3841e","id":372224362,"symbol":"symbol_7","index":3,"round":3,"removed_on_round":null,"position":28,"type":"rare","multiplier_value":null},{"uuid":"823298ca-bb21-4a73-9f73-85ba47405208","id":372224363,"symbol":"symbol_8","index":4,"round":3,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[]}}],"feature_status":null,"max_win_reached":false,"edge_multiplier":"1","amount_won_coins":"0.3","amount_won":"0.0001560662969628"},{"spin_id":7144666,"spin_type":"base_game","bet_amount":"0.200008","bet_amount_currency":"0.000104044197975200","balance_type":103,"total_win":"0","total_win_currency":"0","total_multiplier":"0","feature_triggered":false,"respin_data":{"respin_triggered":false,"scatter_positions":null,"awarded_spins":null},"rounds":[{"id":0,"type":"regular","data":{"spin_multiplier":"0","view":[[{"uuid":"c3fe1be1-14cf-4dc0-b353-f92f18d325e9","id":372224372,"symbol":"symbol_6","index":0,"round":0,"removed_on_round":null,"position":0,"type":"rare","multiplier_value":null},{"uuid":"b94c1f96-a251-4d50-8264-30bc3a22478f","id":372224373,"symbol":"symbol_7","index":1,"round":0,"removed_on_round":null,"position":1,"type":"rare","multiplier_value":null},{"uuid":"dbec3410-5314-43e3-96cd-f072b06e1fc8","id":372224374,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"f4435596-eae4-47a8-b65e-29e0ea950ed7","id":372224375,"symbol":"symbol_4","index":3,"round":0,"removed_on_round":null,"position":3,"type":"common","multiplier_value":null},{"uuid":"e6b75cdf-f21f-406a-9d79-1d92867dd66e","id":372224376,"symbol":"symbol_2","index":4,"round":0,"removed_on_round":null,"position":4,"type":"common","multiplier_value":null}],[{"uuid":"995419b9-72c0-4fb3-ad04-645b54ebe602","id":372224377,"symbol":"symbol_8","index":0,"round":0,"removed_on_round":null,"position":5,"type":"epic","multiplier_value":null},{"uuid":"bae36319-8303-4007-89ca-50b4d083d3f8","id":372224378,"symbol":"symbol_6","index":1,"round":0,"removed_on_round":null,"position":6,"type":"rare","multiplier_value":null},{"uuid":"382427cc-d91f-42c2-98e9-0eaaaa08cab6","id":372224379,"symbol":"symbol_1","index":2,"round":0,"removed_on_round":null,"position":7,"type":"common","multiplier_value":null},{"uuid":"d05c5cff-3b9a-4f31-97ed-acbbff6d5014","id":372224380,"symbol":"symbol_2","index":3,"round":0,"removed_on_round":null,"position":8,"type":"common","multiplier_value":null},{"uuid":"58470339-498e-4b0c-9d92-5f65ca8db9e5","id":372224381,"symbol":"symbol_6","index":4,"round":0,"removed_on_round":null,"position":9,"type":"rare","multiplier_value":null}],[{"uuid":"6c5ba5a9-4fc7-4b4a-9fb6-1d7d5c19de64","id":372224382,"symbol":"wild","index":0,"round":0,"removed_on_round":null,"position":10,"type":"wild","multiplier_value":null},{"uuid":"a2b387a7-3c71-4f43-8f10-8e4888dabae8","id":372224383,"symbol":"symbol_4","index":1,"round":0,"removed_on_round":null,"position":11,"type":"common","multiplier_value":null},{"uuid":"117600a8-fc15-4ac4-a953-5fedc37470d9","id":372224384,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":null,"position":12,"type":"common","multiplier_value":null},{"uuid":"73ca8c4e-b2d1-40b9-b3d8-a5b614fbc860","id":372224385,"symbol":"symbol_4","index":3,"round":0,"removed_on_round":null,"position":13,"type":"common","multiplier_value":null},{"uuid":"0e37dfca-ec18-4f03-b7af-88d184dfdcfb","id":372224386,"symbol":"symbol_3","index":4,"round":0,"removed_on_round":null,"position":14,"type":"common","multiplier_value":null}],[{"uuid":"a8407cdf-548c-4ddd-8d4b-81389e650b89","id":372224387,"symbol":"symbol_4","index":0,"round":0,"removed_on_round":null,"position":15,"type":"common","multiplier_value":null},{"uuid":"97609251-b9b7-4084-beaa-4f0396274ed7","id":372224388,"symbol":"symbol_6","index":1,"round":0,"removed_on_round":null,"position":16,"type":"rare","multiplier_value":null},{"uuid":"91eb7060-718c-4f25-a9da-7066c17c91d3","id":372224389,"symbol":"symbol_5","index":2,"round":0,"removed_on_round":null,"position":17,"type":"rare","multiplier_value":null},{"uuid":"732d7f3d-c3b9-485f-b730-4ffaec542449","id":372224390,"symbol":"symbol_8","index":3,"round":0,"removed_on_round":null,"position":18,"type":"epic","multiplier_value":null},{"uuid":"596657e0-ae76-40c4-aeb5-72bfd4d97f53","id":372224391,"symbol":"symbol_7","index":4,"round":0,"removed_on_round":null,"position":19,"type":"rare","multiplier_value":null}],[{"uuid":"85993885-3c5f-4352-a91b-f9828c7a71c0","id":372224392,"symbol":"symbol_5","index":0,"round":0,"removed_on_round":null,"position":20,"type":"rare","multiplier_value":null},{"uuid":"6d07cc9d-5dbb-4c83-81fa-4ba7aa682ba8","id":372224393,"symbol":"symbol_7","index":1,"round":0,"removed_on_round":null,"position":21,"type":"rare","multiplier_value":null},{"uuid":"2fcfec73-a4d0-4dbe-bcdc-8dab6f844243","id":372224394,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":null,"position":22,"type":"common","multiplier_value":null},{"uuid":"75fa2e2e-b19a-437b-aaa3-469b2709c67b","id":372224395,"symbol":"symbol_6","index":3,"round":0,"removed_on_round":null,"position":23,"type":"rare","multiplier_value":null},{"uuid":"28feac3a-7c8b-4ab6-b4fb-15bdfccf5b05","id":372224396,"symbol":"symbol_7","index":4,"round":0,"removed_on_round":null,"position":24,"type":"rare","multiplier_value":null}],[{"uuid":"a3efba19-1867-4fae-aacd-d4abcf10c49a","id":372224397,"symbol":"symbol_5","index":0,"round":0,"removed_on_round":null,"position":25,"type":"rare","multiplier_value":null},{"uuid":"940644cd-b6ec-4ff6-9d5d-f99501175543","id":372224398,"symbol":"symbol_1","index":1,"round":0,"removed_on_round":null,"position":26,"type":"common","multiplier_value":null},{"uuid":"f2bbfc14-50f9-46c5-b65b-492e01bd3838","id":372224399,"symbol":"symbol_8","index":2,"round":0,"removed_on_round":null,"position":27,"type":"epic","multiplier_value":null},{"uuid":"19c5eeda-e99a-4f1e-bcc2-bf2274f5327d","id":372224400,"symbol":"symbol_5","index":3,"round":0,"removed_on_round":null,"position":28,"type":"rare","multiplier_value":null},{"uuid":"dc968927-2fc5-4486-8885-d1bace95ab71","id":372224401,"symbol":"symbol_5","index":4,"round":0,"removed_on_round":null,"position":29,"type":"rare","multiplier_value":null}]],"paylines":[]}}],"feature_status":null,"max_win_reached":false,"edge_multiplier":"1","amount_won_coins":"0","amount_won":"0"},{"spin_id":7144667,"spin_type":"base_game","bet_amount":"0.200005","bet_amount_currency":"0.000104044197975200","balance_type":103,"total_win":"0.2","total_win_currency":"0.0001040441979752","total_multiplier":"1","feature_triggered":false,"respin_data":{"respin_triggered":false,"scatter_positions":null,"awarded_spins":null},"rounds":[{"id":0,"type":"regular","data":{"spin_multiplier":"0.6","view":[[{"uuid":"bc1b70e7-ad49-4690-9744-41176e9d963a","id":372224402,"symbol":"symbol_2","index":0,"round":0,"removed_on_round":1,"position":0,"type":"common","multiplier_value":null},{"uuid":"c0af37fa-4a7b-4bf2-bcfe-36b4747f9732","id":372224403,"symbol":"symbol_7","index":1,"round":0,"removed_on_round":null,"position":1,"type":"rare","multiplier_value":null},{"uuid":"26b2caeb-01da-421e-8605-1aa3c415968c","id":372224404,"symbol":"symbol_4","index":2,"round":0,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"856bc836-e67d-4ec2-ac38-1352ff0b0066","id":372224405,"symbol":"symbol_3","index":3,"round":0,"removed_on_round":null,"position":3,"type":"common","multiplier_value":null},{"uuid":"87f7467c-a57d-436c-8ebb-c6c775474cb6","id":372224406,"symbol":"symbol_6","index":4,"round":0,"removed_on_round":null,"position":4,"type":"rare","multiplier_value":null}],[{"uuid":"c374217a-c6dd-4524-aabc-c69cc9d67fb5","id":372224407,"symbol":"symbol_2","index":0,"round":0,"removed_on_round":1,"position":5,"type":"common","multiplier_value":null},{"uuid":"512b738e-565a-4825-8fcc-f6018dc5d921","id":372224408,"symbol":"symbol_8","index":1,"round":0,"removed_on_round":null,"position":6,"type":"epic","multiplier_value":null},{"uuid":"f8a2b7a2-28da-4c1f-83f7-f2d6cbee6a29","id":372224409,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":1,"position":7,"type":"common","multiplier_value":null},{"uuid":"43b22c0e-1458-4548-8839-e678f5e247d2","id":372224410,"symbol":"symbol_7","index":3,"round":0,"removed_on_round":null,"position":8,"type":"rare","multiplier_value":null},{"uuid":"bb1dca80-cac6-4628-8dbb-13c36d7c549f","id":372224411,"symbol":"symbol_5","index":4,"round":0,"removed_on_round":null,"position":9,"type":"rare","multiplier_value":null}],[{"uuid":"ab55d76f-5098-472d-80c2-d65550cf58e5","id":372224412,"symbol":"symbol_4","index":0,"round":0,"removed_on_round":null,"position":10,"type":"common","multiplier_value":null},{"uuid":"65427e2f-5e11-49fb-a6e8-8dfe1bd4158e","id":372224413,"symbol":"symbol_8","index":1,"round":0,"removed_on_round":null,"position":11,"type":"epic","multiplier_value":null},{"uuid":"388ac838-c21a-48f2-affd-dfab98f609ee","id":372224414,"symbol":"symbol_1","index":2,"round":0,"removed_on_round":null,"position":12,"type":"common","multiplier_value":null},{"uuid":"aff84a11-09a6-4ae4-a8fd-8b712aa67968","id":372224415,"symbol":"symbol_2","index":3,"round":0,"removed_on_round":1,"position":13,"type":"common","multiplier_value":null},{"uuid":"db21c4d5-322e-4a99-ab69-a3de3e5acec3","id":372224416,"symbol":"symbol_1","index":4,"round":0,"removed_on_round":null,"position":14,"type":"common","multiplier_value":null}],[{"uuid":"3aa61833-e4c1-45b8-8114-1b254397bacd","id":372224417,"symbol":"symbol_1","index":0,"round":0,"removed_on_round":null,"position":15,"type":"common","multiplier_value":null},{"uuid":"8111ca0c-18bd-4284-9731-c0fde4715c35","id":372224418,"symbol":"symbol_1","index":1,"round":0,"removed_on_round":null,"position":16,"type":"common","multiplier_value":null},{"uuid":"154eab10-c634-4861-a759-96bf8ea3991f","id":372224419,"symbol":"symbol_1","index":2,"round":0,"removed_on_round":null,"position":17,"type":"common","multiplier_value":null},{"uuid":"d2227759-2acd-4f99-b0a9-6ec70206f0c4","id":372224420,"symbol":"symbol_1","index":3,"round":0,"removed_on_round":null,"position":18,"type":"common","multiplier_value":null},{"uuid":"af47c593-455d-4758-b317-2b28ba61687a","id":372224421,"symbol":"symbol_3","index":4,"round":0,"removed_on_round":null,"position":19,"type":"common","multiplier_value":null}],[{"uuid":"bf0210b9-41c9-41b6-a557-928cf9ef7200","id":372224422,"symbol":"symbol_5","index":0,"round":0,"removed_on_round":null,"position":20,"type":"rare","multiplier_value":null},{"uuid":"a307e532-1fc9-4037-9d09-dd95a776beb5","id":372224423,"symbol":"symbol_2","index":1,"round":0,"removed_on_round":1,"position":21,"type":"common","multiplier_value":null},{"uuid":"31f26cf3-49b0-4369-8ee9-6fc2ee3df324","id":372224424,"symbol":"symbol_3","index":2,"round":0,"removed_on_round":null,"position":22,"type":"common","multiplier_value":null},{"uuid":"97790937-5dcd-4150-947c-0a9d24c8e83e","id":372224425,"symbol":"symbol_2","index":3,"round":0,"removed_on_round":1,"position":23,"type":"common","multiplier_value":null},{"uuid":"9ea64213-8c06-4b1c-a321-c86706aabb26","id":372224426,"symbol":"symbol_3","index":4,"round":0,"removed_on_round":null,"position":24,"type":"common","multiplier_value":null}],[{"uuid":"9512d446-1604-43e6-87de-8b1df9b08fa2","id":372224427,"symbol":"symbol_2","index":0,"round":0,"removed_on_round":1,"position":25,"type":"common","multiplier_value":null},{"uuid":"05b8da36-18c3-4b08-8b0c-8d50c330d56e","id":372224428,"symbol":"symbol_1","index":1,"round":0,"removed_on_round":null,"position":26,"type":"common","multiplier_value":null},{"uuid":"06471ca3-c654-4e07-b3ed-4c6879b5e233","id":372224429,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":1,"position":27,"type":"common","multiplier_value":null},{"uuid":"794d6425-2e3f-4158-a488-6bfe11fbb5a4","id":372224430,"symbol":"symbol_2","index":3,"round":0,"removed_on_round":1,"position":28,"type":"common","multiplier_value":null},{"uuid":"ebff6f78-6473-4d77-bac0-8e0e693c1e15","id":372224431,"symbol":"symbol_8","index":4,"round":0,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[{"win_type":"cluster","identifier":"cluster_symbol_2_9","symbol":"symbol_2","symbol_name":"symbol_2","count":9,"multiplier":0.6,"payout_coins":"0.12","payout_currency":"0.00006242651878512","bomb_multiplier":0,"base_payout_coins":"0.12","base_payout_currency":"0.00006242651878512"}]}},{"id":1,"type":"tumble","data":{"spin_multiplier":"0.4","view":[[{"uuid":"f26b0705-4945-43dd-9732-0bc99d1da352","id":372224453,"symbol":"symbol_1","index":0,"round":1,"removed_on_round":2,"position":0,"type":"common","multiplier_value":null},{"uuid":"c0af37fa-4a7b-4bf2-bcfe-36b4747f9732","id":372224432,"symbol":"symbol_7","index":1,"round":1,"removed_on_round":null,"position":1,"type":"rare","multiplier_value":null},{"uuid":"26b2caeb-01da-421e-8605-1aa3c415968c","id":372224433,"symbol":"symbol_4","index":2,"round":1,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"856bc836-e67d-4ec2-ac38-1352ff0b0066","id":372224434,"symbol":"symbol_3","index":3,"round":1,"removed_on_round":null,"position":3,"type":"common","multiplier_value":null},{"uuid":"87f7467c-a57d-436c-8ebb-c6c775474cb6","id":372224435,"symbol":"symbol_6","index":4,"round":1,"removed_on_round":null,"position":4,"type":"rare","multiplier_value":null}],[{"uuid":"a0718988-88ba-4a58-9139-4b34449a5566","id":372224454,"symbol":"bonus","index":0,"round":1,"removed_on_round":null,"position":5,"type":"scatter","multiplier_value":null},{"uuid":"ba1215b3-f8e3-48e1-a130-5fd0b05310ab","id":372224455,"symbol":"symbol_9","index":1,"round":1,"removed_on_round":null,"position":6,"type":"premium","multiplier_value":null},{"uuid":"512b738e-565a-4825-8fcc-f6018dc5d921","id":372224436,"symbol":"symbol_8","index":2,"round":1,"removed_on_round":null,"position":7,"type":"epic","multiplier_value":null},{"uuid":"43b22c0e-1458-4548-8839-e678f5e247d2","id":372224437,"symbol":"symbol_7","index":3,"round":1,"removed_on_round":null,"position":8,"type":"rare","multiplier_value":null},{"uuid":"bb1dca80-cac6-4628-8dbb-13c36d7c549f","id":372224438,"symbol":"symbol_5","index":4,"round":1,"removed_on_round":null,"position":9,"type":"rare","multiplier_value":null}],[{"uuid":"1fb29157-64ea-431e-81fe-7ea9026ce79f","id":372224456,"symbol":"symbol_6","index":0,"round":1,"removed_on_round":null,"position":10,"type":"rare","multiplier_value":null},{"uuid":"ab55d76f-5098-472d-80c2-d65550cf58e5","id":372224439,"symbol":"symbol_4","index":1,"round":1,"removed_on_round":null,"position":11,"type":"common","multiplier_value":null},{"uuid":"65427e2f-5e11-49fb-a6e8-8dfe1bd4158e","id":372224440,"symbol":"symbol_8","index":2,"round":1,"removed_on_round":null,"position":12,"type":"epic","multiplier_value":null},{"uuid":"388ac838-c21a-48f2-affd-dfab98f609ee","id":372224441,"symbol":"symbol_1","index":3,"round":1,"removed_on_round":2,"position":13,"type":"common","multiplier_value":null},{"uuid":"db21c4d5-322e-4a99-ab69-a3de3e5acec3","id":372224442,"symbol":"symbol_1","index":4,"round":1,"removed_on_round":2,"position":14,"type":"common","multiplier_value":null}],[{"uuid":"3aa61833-e4c1-45b8-8114-1b254397bacd","id":372224443,"symbol":"symbol_1","index":0,"round":1,"removed_on_round":2,"position":15,"type":"common","multiplier_value":null},{"uuid":"8111ca0c-18bd-4284-9731-c0fde4715c35","id":372224444,"symbol":"symbol_1","index":1,"round":1,"removed_on_round":2,"position":16,"type":"common","multiplier_value":null},{"uuid":"154eab10-c634-4861-a759-96bf8ea3991f","id":372224445,"symbol":"symbol_1","index":2,"round":1,"removed_on_round":2,"position":17,"type":"common","multiplier_value":null},{"uuid":"d2227759-2acd-4f99-b0a9-6ec70206f0c4","id":372224446,"symbol":"symbol_1","index":3,"round":1,"removed_on_round":2,"position":18,"type":"common","multiplier_value":null},{"uuid":"af47c593-455d-4758-b317-2b28ba61687a","id":372224447,"symbol":"symbol_3","index":4,"round":1,"removed_on_round":null,"position":19,"type":"common","multiplier_value":null}],[{"uuid":"028bd8d7-edf1-4d16-be29-90b5a25035aa","id":372224457,"symbol":"symbol_5","index":0,"round":1,"removed_on_round":null,"position":20,"type":"rare","multiplier_value":null},{"uuid":"ca47099b-a41d-42b2-a774-96732889cafa","id":372224458,"symbol":"symbol_3","index":1,"round":1,"removed_on_round":null,"position":21,"type":"common","multiplier_value":null},{"uuid":"bf0210b9-41c9-41b6-a557-928cf9ef7200","id":372224448,"symbol":"symbol_5","index":2,"round":1,"removed_on_round":null,"position":22,"type":"rare","multiplier_value":null},{"uuid":"31f26cf3-49b0-4369-8ee9-6fc2ee3df324","id":372224449,"symbol":"symbol_3","index":3,"round":1,"removed_on_round":null,"position":23,"type":"common","multiplier_value":null},{"uuid":"9ea64213-8c06-4b1c-a321-c86706aabb26","id":372224450,"symbol":"symbol_3","index":4,"round":1,"removed_on_round":null,"position":24,"type":"common","multiplier_value":null}],[{"uuid":"31f909ec-12be-4704-b211-75a8080d3bdf","id":372224459,"symbol":"symbol_8","index":0,"round":1,"removed_on_round":null,"position":25,"type":"epic","multiplier_value":null},{"uuid":"14af5da8-22d2-4886-9328-6cbf42b234c5","id":372224460,"symbol":"symbol_2","index":1,"round":1,"removed_on_round":null,"position":26,"type":"common","multiplier_value":null},{"uuid":"454bdc98-51c1-4c11-8d2d-0e1ed0614634","id":372224461,"symbol":"symbol_4","index":2,"round":1,"removed_on_round":null,"position":27,"type":"common","multiplier_value":null},{"uuid":"05b8da36-18c3-4b08-8b0c-8d50c330d56e","id":372224451,"symbol":"symbol_1","index":3,"round":1,"removed_on_round":2,"position":28,"type":"common","multiplier_value":null},{"uuid":"ebff6f78-6473-4d77-bac0-8e0e693c1e15","id":372224452,"symbol":"symbol_8","index":4,"round":1,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[{"win_type":"cluster","identifier":"cluster_symbol_1_8","symbol":"symbol_1","symbol_name":"symbol_1","count":8,"multiplier":0.4,"payout_coins":"0.08","payout_currency":"0.00004161767919008","bomb_multiplier":0,"base_payout_coins":"0.08","base_payout_currency":"0.00004161767919008"}]}},{"id":2,"type":"tumble","data":{"spin_multiplier":"0","view":[[{"uuid":"074b3ebf-c9b3-4282-98fd-45c19b6cf2f7","id":372224484,"symbol":"symbol_6","index":0,"round":2,"removed_on_round":null,"position":0,"type":"rare","multiplier_value":null},{"uuid":"c0af37fa-4a7b-4bf2-bcfe-36b4747f9732","id":372224462,"symbol":"symbol_7","index":1,"round":2,"removed_on_round":null,"position":1,"type":"rare","multiplier_value":null},{"uuid":"26b2caeb-01da-421e-8605-1aa3c415968c","id":372224463,"symbol":"symbol_4","index":2,"round":2,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"856bc836-e67d-4ec2-ac38-1352ff0b0066","id":372224464,"symbol":"symbol_3","index":3,"round":2,"removed_on_round":null,"position":3,"type":"common","multiplier_value":null},{"uuid":"87f7467c-a57d-436c-8ebb-c6c775474cb6","id":372224465,"symbol":"symbol_6","index":4,"round":2,"removed_on_round":null,"position":4,"type":"rare","multiplier_value":null}],[{"uuid":"a0718988-88ba-4a58-9139-4b34449a5566","id":372224466,"symbol":"bonus","index":0,"round":2,"removed_on_round":null,"position":5,"type":"scatter","multiplier_value":null},{"uuid":"ba1215b3-f8e3-48e1-a130-5fd0b05310ab","id":372224467,"symbol":"symbol_9","index":1,"round":2,"removed_on_round":null,"position":6,"type":"premium","multiplier_value":null},{"uuid":"512b738e-565a-4825-8fcc-f6018dc5d921","id":372224468,"symbol":"symbol_8","index":2,"round":2,"removed_on_round":null,"position":7,"type":"epic","multiplier_value":null},{"uuid":"43b22c0e-1458-4548-8839-e678f5e247d2","id":372224469,"symbol":"symbol_7","index":3,"round":2,"removed_on_round":null,"position":8,"type":"rare","multiplier_value":null},{"uuid":"bb1dca80-cac6-4628-8dbb-13c36d7c549f","id":372224470,"symbol":"symbol_5","index":4,"round":2,"removed_on_round":null,"position":9,"type":"rare","multiplier_value":null}],[{"uuid":"b6941b36-dbd6-487b-840c-42a4b72eeb18","id":372224485,"symbol":"symbol_1","index":0,"round":2,"removed_on_round":null,"position":10,"type":"common","multiplier_value":null},{"uuid":"ee6cb075-271d-46bf-883d-39ccd1c45962","id":372224486,"symbol":"symbol_1","index":1,"round":2,"removed_on_round":null,"position":11,"type":"common","multiplier_value":null},{"uuid":"1fb29157-64ea-431e-81fe-7ea9026ce79f","id":372224471,"symbol":"symbol_6","index":2,"round":2,"removed_on_round":null,"position":12,"type":"rare","multiplier_value":null},{"uuid":"ab55d76f-5098-472d-80c2-d65550cf58e5","id":372224472,"symbol":"symbol_4","index":3,"round":2,"removed_on_round":null,"position":13,"type":"common","multiplier_value":null},{"uuid":"65427e2f-5e11-49fb-a6e8-8dfe1bd4158e","id":372224473,"symbol":"symbol_8","index":4,"round":2,"removed_on_round":null,"position":14,"type":"epic","multiplier_value":null}],[{"uuid":"e1eede6b-2f66-4aba-8390-6a65a8537e27","id":372224487,"symbol":"bonus","index":0,"round":2,"removed_on_round":null,"position":15,"type":"scatter","multiplier_value":null},{"uuid":"aea4fb7e-f5b8-4a5d-a48f-7fe9e79a9d77","id":372224488,"symbol":"symbol_7","index":1,"round":2,"removed_on_round":null,"position":16,"type":"rare","multiplier_value":null},{"uuid":"5e624801-2689-49d0-8b5a-d94e10ec3cd7","id":372224489,"symbol":"symbol_5","index":2,"round":2,"removed_on_round":null,"position":17,"type":"rare","multiplier_value":null},{"uuid":"26fa21f9-fe63-4ac1-bbaf-428bc31fc386","id":372224490,"symbol":"symbol_8","index":3,"round":2,"removed_on_round":null,"position":18,"type":"epic","multiplier_value":null},{"uuid":"af47c593-455d-4758-b317-2b28ba61687a","id":372224474,"symbol":"symbol_3","index":4,"round":2,"removed_on_round":null,"position":19,"type":"common","multiplier_value":null}],[{"uuid":"028bd8d7-edf1-4d16-be29-90b5a25035aa","id":372224475,"symbol":"symbol_5","index":0,"round":2,"removed_on_round":null,"position":20,"type":"rare","multiplier_value":null},{"uuid":"ca47099b-a41d-42b2-a774-96732889cafa","id":372224476,"symbol":"symbol_3","index":1,"round":2,"removed_on_round":null,"position":21,"type":"common","multiplier_value":null},{"uuid":"bf0210b9-41c9-41b6-a557-928cf9ef7200","id":372224477,"symbol":"symbol_5","index":2,"round":2,"removed_on_round":null,"position":22,"type":"rare","multiplier_value":null},{"uuid":"31f26cf3-49b0-4369-8ee9-6fc2ee3df324","id":372224478,"symbol":"symbol_3","index":3,"round":2,"removed_on_round":null,"position":23,"type":"common","multiplier_value":null},{"uuid":"9ea64213-8c06-4b1c-a321-c86706aabb26","id":372224479,"symbol":"symbol_3","index":4,"round":2,"removed_on_round":null,"position":24,"type":"common","multiplier_value":null}],[{"uuid":"c7fe79da-a6fe-4ce6-b9c7-a14dc4446ce8","id":372224491,"symbol":"wild","index":0,"round":2,"removed_on_round":null,"position":25,"type":"wild","multiplier_value":null},{"uuid":"31f909ec-12be-4704-b211-75a8080d3bdf","id":372224480,"symbol":"symbol_8","index":1,"round":2,"removed_on_round":null,"position":26,"type":"epic","multiplier_value":null},{"uuid":"14af5da8-22d2-4886-9328-6cbf42b234c5","id":372224481,"symbol":"symbol_2","index":2,"round":2,"removed_on_round":null,"position":27,"type":"common","multiplier_value":null},{"uuid":"454bdc98-51c1-4c11-8d2d-0e1ed0614634","id":372224482,"symbol":"symbol_4","index":3,"round":2,"removed_on_round":null,"position":28,"type":"common","multiplier_value":null},{"uuid":"ebff6f78-6473-4d77-bac0-8e0e693c1e15","id":372224483,"symbol":"symbol_8","index":4,"round":2,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[]}}],"feature_status":null,"max_win_reached":false,"edge_multiplier":"1","amount_won_coins":"0.2","amount_won":"0.0001040441979752"},{"spin_id":7144668,"spin_type":"base_game","bet_amount":"0.200006","bet_amount_currency":"0.000104044197975200","balance_type":103,"total_win":"0","total_win_currency":"0","total_multiplier":"0","feature_triggered":false,"respin_data":{"respin_triggered":false,"scatter_positions":null,"awarded_spins":null},"rounds":[{"id":0,"type":"regular","data":{"spin_multiplier":"0","view":[[{"uuid":"02547661-dc08-4355-be2a-a9452bf2ea10","id":372224492,"symbol":"symbol_5","index":0,"round":0,"removed_on_round":null,"position":0,"type":"rare","multiplier_value":null},{"uuid":"15ee60c8-ac11-4483-aa00-5efb3e6fd249","id":372224493,"symbol":"symbol_4","index":1,"round":0,"removed_on_round":null,"position":1,"type":"common","multiplier_value":null},{"uuid":"afa507bb-75f3-4f58-883d-95b91ba6a08b","id":372224494,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":null,"position":2,"type":"common","multiplier_value":null},{"uuid":"218e0701-4f15-45ab-92c2-5c23e97dace5","id":372224495,"symbol":"symbol_9","index":3,"round":0,"removed_on_round":null,"position":3,"type":"premium","multiplier_value":null},{"uuid":"1c007813-431b-4626-a127-f25f83b778e5","id":372224496,"symbol":"symbol_8","index":4,"round":0,"removed_on_round":null,"position":4,"type":"epic","multiplier_value":null}],[{"uuid":"e8e46935-365c-4160-990d-ce648dc73885","id":372224497,"symbol":"symbol_6","index":0,"round":0,"removed_on_round":null,"position":5,"type":"rare","multiplier_value":null},{"uuid":"63adfd39-a044-4457-be87-0a052b1562d4","id":372224498,"symbol":"symbol_7","index":1,"round":0,"removed_on_round":null,"position":6,"type":"rare","multiplier_value":null},{"uuid":"8be52c09-aa6d-4716-8167-67e88fc906f7","id":372224499,"symbol":"symbol_1","index":2,"round":0,"removed_on_round":null,"position":7,"type":"common","multiplier_value":null},{"uuid":"dc241ff9-10b8-4add-b784-a52e38bd7e25","id":372224500,"symbol":"symbol_4","index":3,"round":0,"removed_on_round":null,"position":8,"type":"common","multiplier_value":null},{"uuid":"2b3725a2-7bf6-4d93-afc4-a7dc11898111","id":372224501,"symbol":"symbol_1","index":4,"round":0,"removed_on_round":null,"position":9,"type":"common","multiplier_value":null}],[{"uuid":"a6b597cf-e647-43e8-87c6-99e19223cb78","id":372224502,"symbol":"symbol_7","index":0,"round":0,"removed_on_round":null,"position":10,"type":"rare","multiplier_value":null},{"uuid":"5f1c6a03-3ded-4917-99fa-a18a7b28849e","id":372224503,"symbol":"symbol_2","index":1,"round":0,"removed_on_round":null,"position":11,"type":"common","multiplier_value":null},{"uuid":"1781839e-15f0-4a32-a0ba-51a1340c8035","id":372224504,"symbol":"symbol_1","index":2,"round":0,"removed_on_round":null,"position":12,"type":"common","multiplier_value":null},{"uuid":"aa84651f-ce7e-4e85-ad37-0b9939bdd324","id":372224505,"symbol":"symbol_1","index":3,"round":0,"removed_on_round":null,"position":13,"type":"common","multiplier_value":null},{"uuid":"53ee2a7f-70a4-44a2-88e2-646209f5e2a1","id":372224506,"symbol":"symbol_1","index":4,"round":0,"removed_on_round":null,"position":14,"type":"common","multiplier_value":null}],[{"uuid":"a970e578-a905-40bc-ada2-d04cd4f10ced","id":372224507,"symbol":"symbol_2","index":0,"round":0,"removed_on_round":null,"position":15,"type":"common","multiplier_value":null},{"uuid":"395d4275-616b-4fdc-8c0d-e91dcb5fa637","id":372224508,"symbol":"symbol_4","index":1,"round":0,"removed_on_round":null,"position":16,"type":"common","multiplier_value":null},{"uuid":"0312d9cc-746d-4ddc-bacd-fac172e81d36","id":372224509,"symbol":"symbol_3","index":2,"round":0,"removed_on_round":null,"position":17,"type":"common","multiplier_value":null},{"uuid":"daceb977-f4f6-4c2f-b2bd-9f17b33a3020","id":372224510,"symbol":"symbol_5","index":3,"round":0,"removed_on_round":null,"position":18,"type":"rare","multiplier_value":null},{"uuid":"ab8cdb03-8eff-4e77-b889-fbe516279c55","id":372224511,"symbol":"symbol_8","index":4,"round":0,"removed_on_round":null,"position":19,"type":"epic","multiplier_value":null}],[{"uuid":"47a5b65f-9257-4ad5-b4eb-d803552bf773","id":372224512,"symbol":"symbol_3","index":0,"round":0,"removed_on_round":null,"position":20,"type":"common","multiplier_value":null},{"uuid":"b7057559-a062-446c-8ac5-a14c88c3a287","id":372224513,"symbol":"symbol_5","index":1,"round":0,"removed_on_round":null,"position":21,"type":"rare","multiplier_value":null},{"uuid":"9f4c6fb2-34ae-4164-b41c-cdd3a8d33849","id":372224514,"symbol":"symbol_4","index":2,"round":0,"removed_on_round":null,"position":22,"type":"common","multiplier_value":null},{"uuid":"f4f454d0-815c-49f5-a042-7663ce3b89f8","id":372224515,"symbol":"symbol_2","index":3,"round":0,"removed_on_round":null,"position":23,"type":"common","multiplier_value":null},{"uuid":"3d622b52-f878-41dc-bd30-fb7c5aa62939","id":372224516,"symbol":"symbol_7","index":4,"round":0,"removed_on_round":null,"position":24,"type":"rare","multiplier_value":null}],[{"uuid":"c5493673-3d8e-4d7e-adc0-a3e4bdcdd3a5","id":372224517,"symbol":"symbol_8","index":0,"round":0,"removed_on_round":null,"position":25,"type":"epic","multiplier_value":null},{"uuid":"dfa57e5a-45d1-4ed9-a7d9-c62fcf707944","id":372224518,"symbol":"symbol_8","index":1,"round":0,"removed_on_round":null,"position":26,"type":"epic","multiplier_value":null},{"uuid":"7db3bea6-81d6-43e2-ba89-b34a3cfb5683","id":372224519,"symbol":"symbol_1","index":2,"round":0,"removed_on_round":null,"position":27,"type":"common","multiplier_value":null},{"uuid":"bc2eb5bb-5955-4909-969b-c9b524d31a10","id":372224520,"symbol":"symbol_8","index":3,"round":0,"removed_on_round":null,"position":28,"type":"epic","multiplier_value":null},{"uuid":"c2ce0be6-c74d-4cd4-b0a0-29c357850a59","id":372224521,"symbol":"symbol_5","index":4,"round":0,"removed_on_round":null,"position":29,"type":"rare","multiplier_value":null}]],"paylines":[]}}],"feature_status":null,"max_win_reached":false,"edge_multiplier":"1","amount_won_coins":"0","amount_won":"0"},{"spin_id":7144669,"spin_type":"base_game","bet_amount":"0.200006","bet_amount_currency":"0.000104044197975200","balance_type":103,"total_win":"0.22","total_win_currency":"0.00011444861777272","total_multiplier":"1.1","feature_triggered":false,"respin_data":{"respin_triggered":false,"scatter_positions":null,"awarded_spins":null},"rounds":[{"id":0,"type":"regular","data":{"spin_multiplier":"0.7","view":[[{"uuid":"bb05a535-d6ac-4055-93c1-6cb0f0f9f5dd","id":372224522,"symbol":"symbol_1","index":0,"round":0,"removed_on_round":null,"position":0,"type":"common","multiplier_value":null},{"uuid":"b6fcfc75-253d-44de-bae5-85f1706950a9","id":372224523,"symbol":"symbol_5","index":1,"round":0,"removed_on_round":null,"position":1,"type":"rare","multiplier_value":null},{"uuid":"5613cc86-98ce-4f93-b809-6b4b7daa0da7","id":372224524,"symbol":"symbol_6","index":2,"round":0,"removed_on_round":null,"position":2,"type":"rare","multiplier_value":null},{"uuid":"bdc5266e-2b11-4eb0-a721-c4660b779e94","id":372224525,"symbol":"symbol_4","index":3,"round":0,"removed_on_round":1,"position":3,"type":"common","multiplier_value":null},{"uuid":"737e296d-2d1e-43db-9319-4c30771f472f","id":372224526,"symbol":"symbol_2","index":4,"round":0,"removed_on_round":null,"position":4,"type":"common","multiplier_value":null}],[{"uuid":"f89cd08f-41e8-40cf-80c7-c869e91ec0cf","id":372224527,"symbol":"symbol_6","index":0,"round":0,"removed_on_round":null,"position":5,"type":"rare","multiplier_value":null},{"uuid":"39474c10-2812-494d-a52d-d85bf9d1bccd","id":372224528,"symbol":"symbol_2","index":1,"round":0,"removed_on_round":null,"position":6,"type":"common","multiplier_value":null},{"uuid":"c144fe68-24c0-4756-adc4-831be37c89a9","id":372224529,"symbol":"symbol_4","index":2,"round":0,"removed_on_round":1,"position":7,"type":"common","multiplier_value":null},{"uuid":"902125f1-7004-4007-a06d-83eec5f5f501","id":372224530,"symbol":"symbol_1","index":3,"round":0,"removed_on_round":null,"position":8,"type":"common","multiplier_value":null},{"uuid":"71ecb514-1da4-4785-99e9-65fbbe288a84","id":372224531,"symbol":"symbol_4","index":4,"round":0,"removed_on_round":1,"position":9,"type":"common","multiplier_value":null}],[{"uuid":"0337b49b-19e2-4614-8064-0687b3eaf9c8","id":372224532,"symbol":"wild","index":0,"round":0,"removed_on_round":1,"position":10,"type":"wild","multiplier_value":null},{"uuid":"cbf4d112-975f-4064-b4ba-85846979645f","id":372224533,"symbol":"wild","index":1,"round":0,"removed_on_round":1,"position":11,"type":"wild","multiplier_value":null},{"uuid":"ac3f39e1-7b50-4cb3-acee-7c374e23706d","id":372224534,"symbol":"symbol_2","index":2,"round":0,"removed_on_round":null,"position":12,"type":"common","multiplier_value":null},{"uuid":"fa568163-f8e4-4fab-a4b1-8ef7d36c1917","id":372224535,"symbol":"symbol_4","index":3,"round":0,"removed_on_round":1,"position":13,"type":"common","multiplier_value":null},{"uuid":"b258be88-7079-4bed-891f-5be5d78532e6","id":372224536,"symbol":"symbol_5","index":4,"round":0,"removed_on_round":null,"position":14,"type":"rare","multiplier_value":null}],[{"uuid":"97c67822-edb2-4675-b0e9-78a1e0c67473","id":372224537,"symbol":"symbol_6","index":0,"round":0,"removed_on_round":null,"position":15,"type":"rare","multiplier_value":null},{"uuid":"159aa6b9-f3dc-4d31-bd0c-6d8c8ab9418f","id":372224538,"symbol":"symbol_3","index":1,"round":0,"removed_on_round":null,"position":16,"type":"common","multiplier_value":null},{"uuid":"d5b2e910-4ffb-4001-9339-dc359b4c722e","id":372224539,"symbol":"symbol_7","index":2,"round":0,"removed_on_round":null,"position":17,"type":"rare","multiplier_value":null},{"uuid":"28b1aec1-33ef-448c-bbae-1d6fad553fcb","id":372224540,"symbol":"symbol_6","index":3,"round":0,"removed_on_round":null,"position":18,"type":"rare","multiplier_value":null},{"uuid":"877679f7-83f5-4437-afc7-106b8d73719a","id":372224541,"symbol":"symbol_2","index":4,"round":0,"removed_on_round":null,"position":19,"type":"common","multiplier_value":null}],[{"uuid":"39a4e838-8da0-4cdf-bc95-df87a4b5c3d3","id":372224542,"symbol":"symbol_5","index":0,"round":0,"removed_on_round":null,"position":20,"type":"rare","multiplier_value":null},{"uuid":"5e94d0e2-3688-4255-80c1-9ac02aea14e8","id":372224543,"symbol":"symbol_5","index":1,"round":0,"removed_on_round":null,"position":21,"type":"rare","multiplier_value":null},{"uuid":"368e5e7a-ee82-4657-9c1f-1fd365637afa","id":372224544,"symbol":"symbol_4","index":2,"round":0,"removed_on_round":1,"position":22,"type":"common","multiplier_value":null},{"uuid":"a4630ae7-0ed0-4ca5-b516-fd2302517478","id":372224545,"symbol":"symbol_1","index":3,"round":0,"removed_on_round":null,"position":23,"type":"common","multiplier_value":null},{"uuid":"79893650-c0df-4a1b-86e1-eca912ea7263","id":372224546,"symbol":"symbol_4","index":4,"round":0,"removed_on_round":1,"position":24,"type":"common","multiplier_value":null}],[{"uuid":"711caa6b-ffb3-4d9d-9ec2-ec58e8bfc384","id":372224547,"symbol":"symbol_1","index":0,"round":0,"removed_on_round":null,"position":25,"type":"common","multiplier_value":null},{"uuid":"55464ce1-4b75-4da2-8da0-d1c6f7ff3e6f","id":372224548,"symbol":"symbol_9","index":1,"round":0,"removed_on_round":null,"position":26,"type":"premium","multiplier_value":null},{"uuid":"d9c11eaf-d050-45d4-b387-f060eb00401a","id":372224549,"symbol":"symbol_7","index":2,"round":0,"removed_on_round":null,"position":27,"type":"rare","multiplier_value":null},{"uuid":"915eb758-e4c8-4c0f-8e63-a57ddf923fb3","id":372224550,"symbol":"symbol_1","index":3,"round":0,"removed_on_round":null,"position":28,"type":"common","multiplier_value":null},{"uuid":"aec2577b-864c-4c3d-b1d2-bbacca832b73","id":372224551,"symbol":"symbol_8","index":4,"round":0,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[{"win_type":"cluster","identifier":"cluster_symbol_4_8","symbol":"symbol_4","symbol_name":"symbol_4","count":8,"multiplier":0.7,"payout_coins":"0.14","payout_currency":"0.00007283093858264","bomb_multiplier":0,"base_payout_coins":"0.14","base_payout_currency":"0.00007283093858264"}]}},{"id":1,"type":"tumble","data":{"spin_multiplier":"0.4","view":[[{"uuid":"246e46ff-a1ac-4830-85a0-479a8903696e","id":372224574,"symbol":"symbol_1","index":0,"round":1,"removed_on_round":2,"position":0,"type":"common","multiplier_value":null},{"uuid":"bb05a535-d6ac-4055-93c1-6cb0f0f9f5dd","id":372224552,"symbol":"symbol_1","index":1,"round":1,"removed_on_round":2,"position":1,"type":"common","multiplier_value":null},{"uuid":"b6fcfc75-253d-44de-bae5-85f1706950a9","id":372224553,"symbol":"symbol_5","index":2,"round":1,"removed_on_round":null,"position":2,"type":"rare","multiplier_value":null},{"uuid":"5613cc86-98ce-4f93-b809-6b4b7daa0da7","id":372224554,"symbol":"symbol_6","index":3,"round":1,"removed_on_round":null,"position":3,"type":"rare","multiplier_value":null},{"uuid":"737e296d-2d1e-43db-9319-4c30771f472f","id":372224555,"symbol":"symbol_2","index":4,"round":1,"removed_on_round":null,"position":4,"type":"common","multiplier_value":null}],[{"uuid":"cd04e5cd-6e4c-46af-8d1b-0a6d04e5d604","id":372224575,"symbol":"symbol_4","index":0,"round":1,"removed_on_round":null,"position":5,"type":"common","multiplier_value":null},{"uuid":"0867bc79-0d4e-4e6c-9d98-3bfd99d84455","id":372224576,"symbol":"symbol_1","index":1,"round":1,"removed_on_round":2,"position":6,"type":"common","multiplier_value":null},{"uuid":"f89cd08f-41e8-40cf-80c7-c869e91ec0cf","id":372224556,"symbol":"symbol_6","index":2,"round":1,"removed_on_round":null,"position":7,"type":"rare","multiplier_value":null},{"uuid":"39474c10-2812-494d-a52d-d85bf9d1bccd","id":372224557,"symbol":"symbol_2","index":3,"round":1,"removed_on_round":null,"position":8,"type":"common","multiplier_value":null},{"uuid":"902125f1-7004-4007-a06d-83eec5f5f501","id":372224558,"symbol":"symbol_1","index":4,"round":1,"removed_on_round":2,"position":9,"type":"common","multiplier_value":null}],[{"uuid":"8f6bb15f-a369-4588-8481-2b29bc1c27a8","id":372224577,"symbol":"symbol_1","index":0,"round":1,"removed_on_round":2,"position":10,"type":"common","multiplier_value":null},{"uuid":"5e4c34a2-d347-48af-ba95-e701c8b40bf7","id":372224578,"symbol":"symbol_8","index":1,"round":1,"removed_on_round":null,"position":11,"type":"epic","multiplier_value":null},{"uuid":"87a085ef-53cd-42f1-95b2-0faf96cca03c","id":372224579,"symbol":"symbol_8","index":2,"round":1,"removed_on_round":null,"position":12,"type":"epic","multiplier_value":null},{"uuid":"ac3f39e1-7b50-4cb3-acee-7c374e23706d","id":372224559,"symbol":"symbol_2","index":3,"round":1,"removed_on_round":null,"position":13,"type":"common","multiplier_value":null},{"uuid":"b258be88-7079-4bed-891f-5be5d78532e6","id":372224560,"symbol":"symbol_5","index":4,"round":1,"removed_on_round":null,"position":14,"type":"rare","multiplier_value":null}],[{"uuid":"97c67822-edb2-4675-b0e9-78a1e0c67473","id":372224561,"symbol":"symbol_6","index":0,"round":1,"removed_on_round":null,"position":15,"type":"rare","multiplier_value":null},{"uuid":"159aa6b9-f3dc-4d31-bd0c-6d8c8ab9418f","id":372224562,"symbol":"symbol_3","index":1,"round":1,"removed_on_round":null,"position":16,"type":"common","multiplier_value":null},{"uuid":"d5b2e910-4ffb-4001-9339-dc359b4c722e","id":372224563,"symbol":"symbol_7","index":2,"round":1,"removed_on_round":null,"position":17,"type":"rare","multiplier_value":null},{"uuid":"28b1aec1-33ef-448c-bbae-1d6fad553fcb","id":372224564,"symbol":"symbol_6","index":3,"round":1,"removed_on_round":null,"position":18,"type":"rare","multiplier_value":null},{"uuid":"877679f7-83f5-4437-afc7-106b8d73719a","id":372224565,"symbol":"symbol_2","index":4,"round":1,"removed_on_round":null,"position":19,"type":"common","multiplier_value":null}],[{"uuid":"88a41e28-d1b3-4377-a225-f2c93658c971","id":372224580,"symbol":"symbol_1","index":0,"round":1,"removed_on_round":2,"position":20,"type":"common","multiplier_value":null},{"uuid":"317deced-e005-41bf-b029-9659b07bb6b0","id":372224581,"symbol":"symbol_3","index":1,"round":1,"removed_on_round":null,"position":21,"type":"common","multiplier_value":null},{"uuid":"39a4e838-8da0-4cdf-bc95-df87a4b5c3d3","id":372224566,"symbol":"symbol_5","index":2,"round":1,"removed_on_round":null,"position":22,"type":"rare","multiplier_value":null},{"uuid":"5e94d0e2-3688-4255-80c1-9ac02aea14e8","id":372224567,"symbol":"symbol_5","index":3,"round":1,"removed_on_round":null,"position":23,"type":"rare","multiplier_value":null},{"uuid":"a4630ae7-0ed0-4ca5-b516-fd2302517478","id":372224568,"symbol":"symbol_1","index":4,"round":1,"removed_on_round":2,"position":24,"type":"common","multiplier_value":null}],[{"uuid":"711caa6b-ffb3-4d9d-9ec2-ec58e8bfc384","id":372224569,"symbol":"symbol_1","index":0,"round":1,"removed_on_round":2,"position":25,"type":"common","multiplier_value":null},{"uuid":"55464ce1-4b75-4da2-8da0-d1c6f7ff3e6f","id":372224570,"symbol":"symbol_9","index":1,"round":1,"removed_on_round":null,"position":26,"type":"premium","multiplier_value":null},{"uuid":"d9c11eaf-d050-45d4-b387-f060eb00401a","id":372224571,"symbol":"symbol_7","index":2,"round":1,"removed_on_round":null,"position":27,"type":"rare","multiplier_value":null},{"uuid":"915eb758-e4c8-4c0f-8e63-a57ddf923fb3","id":372224572,"symbol":"symbol_1","index":3,"round":1,"removed_on_round":2,"position":28,"type":"common","multiplier_value":null},{"uuid":"aec2577b-864c-4c3d-b1d2-bbacca832b73","id":372224573,"symbol":"symbol_8","index":4,"round":1,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[{"win_type":"cluster","identifier":"cluster_symbol_1_9","symbol":"symbol_1","symbol_name":"symbol_1","count":9,"multiplier":0.4,"payout_coins":"0.08","payout_currency":"0.00004161767919008","bomb_multiplier":0,"base_payout_coins":"0.08","base_payout_currency":"0.00004161767919008"}]}},{"id":2,"type":"tumble","data":{"spin_multiplier":"0","view":[[{"uuid":"767a8682-eece-43ac-a8ab-e0ca8817a5c3","id":372224603,"symbol":"symbol_6","index":0,"round":2,"removed_on_round":null,"position":0,"type":"rare","multiplier_value":null},{"uuid":"ab303daa-be75-455a-bebf-1d1aec56497f","id":372224604,"symbol":"symbol_7","index":1,"round":2,"removed_on_round":null,"position":2,"type":"rare","multiplier_value":null},{"uuid":"b6fcfc75-253d-44de-bae5-85f1706950a9","id":372224582,"symbol":"symbol_5","index":2,"round":2,"removed_on_round":null,"position":2,"type":"rare","multiplier_value":null},{"uuid":"5613cc86-98ce-4f93-b809-6b4b7daa0da7","id":372224583,"symbol":"symbol_6","index":3,"round":2,"removed_on_round":null,"position":3,"type":"rare","multiplier_value":null},{"uuid":"737e296d-2d1e-43db-9319-4c30771f472f","id":372224584,"symbol":"symbol_2","index":4,"round":2,"removed_on_round":null,"position":4,"type":"common","multiplier_value":null}],[{"uuid":"44bd39da-7e30-434b-931d-5688071220c8","id":372224605,"symbol":"symbol_1","index":0,"round":2,"removed_on_round":null,"position":5,"type":"common","multiplier_value":null},{"uuid":"f4b63a48-b229-432c-a274-76a739841ae0","id":372224606,"symbol":"symbol_2","index":1,"round":2,"removed_on_round":null,"position":6,"type":"common","multiplier_value":null},{"uuid":"cd04e5cd-6e4c-46af-8d1b-0a6d04e5d604","id":372224585,"symbol":"symbol_4","index":2,"round":2,"removed_on_round":null,"position":7,"type":"common","multiplier_value":null},{"uuid":"f89cd08f-41e8-40cf-80c7-c869e91ec0cf","id":372224586,"symbol":"symbol_6","index":3,"round":2,"removed_on_round":null,"position":8,"type":"rare","multiplier_value":null},{"uuid":"39474c10-2812-494d-a52d-d85bf9d1bccd","id":372224587,"symbol":"symbol_2","index":4,"round":2,"removed_on_round":null,"position":9,"type":"common","multiplier_value":null}],[{"uuid":"9d40e15d-9d11-42c9-b9b5-7f1a68c682e0","id":372224607,"symbol":"symbol_2","index":0,"round":2,"removed_on_round":null,"position":10,"type":"common","multiplier_value":null},{"uuid":"5e4c34a2-d347-48af-ba95-e701c8b40bf7","id":372224588,"symbol":"symbol_8","index":1,"round":2,"removed_on_round":null,"position":11,"type":"epic","multiplier_value":null},{"uuid":"87a085ef-53cd-42f1-95b2-0faf96cca03c","id":372224589,"symbol":"symbol_8","index":2,"round":2,"removed_on_round":null,"position":12,"type":"epic","multiplier_value":null},{"uuid":"ac3f39e1-7b50-4cb3-acee-7c374e23706d","id":372224590,"symbol":"symbol_2","index":3,"round":2,"removed_on_round":null,"position":13,"type":"common","multiplier_value":null},{"uuid":"b258be88-7079-4bed-891f-5be5d78532e6","id":372224591,"symbol":"symbol_5","index":4,"round":2,"removed_on_round":null,"position":14,"type":"rare","multiplier_value":null}],[{"uuid":"97c67822-edb2-4675-b0e9-78a1e0c67473","id":372224592,"symbol":"symbol_6","index":0,"round":2,"removed_on_round":null,"position":15,"type":"rare","multiplier_value":null},{"uuid":"159aa6b9-f3dc-4d31-bd0c-6d8c8ab9418f","id":372224593,"symbol":"symbol_3","index":1,"round":2,"removed_on_round":null,"position":16,"type":"common","multiplier_value":null},{"uuid":"d5b2e910-4ffb-4001-9339-dc359b4c722e","id":372224594,"symbol":"symbol_7","index":2,"round":2,"removed_on_round":null,"position":17,"type":"rare","multiplier_value":null},{"uuid":"28b1aec1-33ef-448c-bbae-1d6fad553fcb","id":372224595,"symbol":"symbol_6","index":3,"round":2,"removed_on_round":null,"position":18,"type":"rare","multiplier_value":null},{"uuid":"877679f7-83f5-4437-afc7-106b8d73719a","id":372224596,"symbol":"symbol_2","index":4,"round":2,"removed_on_round":null,"position":19,"type":"common","multiplier_value":null}],[{"uuid":"e0f1a5ec-e1c7-4408-a159-94a83b08b559","id":372224608,"symbol":"symbol_5","index":0,"round":2,"removed_on_round":null,"position":20,"type":"rare","multiplier_value":null},{"uuid":"22d1ac78-54e5-45a9-9701-77ae8d4198e5","id":372224609,"symbol":"symbol_2","index":1,"round":2,"removed_on_round":null,"position":21,"type":"common","multiplier_value":null},{"uuid":"317deced-e005-41bf-b029-9659b07bb6b0","id":372224597,"symbol":"symbol_3","index":2,"round":2,"removed_on_round":null,"position":22,"type":"common","multiplier_value":null},{"uuid":"39a4e838-8da0-4cdf-bc95-df87a4b5c3d3","id":372224598,"symbol":"symbol_5","index":3,"round":2,"removed_on_round":null,"position":23,"type":"rare","multiplier_value":null},{"uuid":"5e94d0e2-3688-4255-80c1-9ac02aea14e8","id":372224599,"symbol":"symbol_5","index":4,"round":2,"removed_on_round":null,"position":24,"type":"rare","multiplier_value":null}],[{"uuid":"2a4bd315-9a34-431a-8444-ba68fc64d491","id":372224610,"symbol":"symbol_1","index":0,"round":2,"removed_on_round":null,"position":25,"type":"common","multiplier_value":null},{"uuid":"bf475598-20d5-48d9-89d7-c9778f11fc58","id":372224611,"symbol":"symbol_4","index":1,"round":2,"removed_on_round":null,"position":26,"type":"common","multiplier_value":null},{"uuid":"55464ce1-4b75-4da2-8da0-d1c6f7ff3e6f","id":372224600,"symbol":"symbol_9","index":2,"round":2,"removed_on_round":null,"position":27,"type":"premium","multiplier_value":null},{"uuid":"d9c11eaf-d050-45d4-b387-f060eb00401a","id":372224601,"symbol":"symbol_7","index":3,"round":2,"removed_on_round":null,"position":28,"type":"rare","multiplier_value":null},{"uuid":"aec2577b-864c-4c3d-b1d2-bbacca832b73","id":372224602,"symbol":"symbol_8","index":4,"round":2,"removed_on_round":null,"position":29,"type":"epic","multiplier_value":null}]],"paylines":[]}}],"feature_status":null,"max_win_reached":false,"edge_multiplier":"1","amount_won_coins":"0.22","amount_won":"0.00011444861777272"}];
 
     const GROOMERS_TEMPLATES = (() => {
         try {
@@ -2980,7 +2630,7 @@ function patchVideoPokerDraw(ctx, roundId) {
         const stakeUsd = c.usd;
         const coinId = c.coinId;
         if (!GROOMERS_TEMPLATES.length) {
-            if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd, coinId); }
+            if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd); }
             pushBalanceAfterBet();
             return { success: true, data: {
                 spin_id: randRoundId(), spin_type: "base_game",
@@ -3001,9 +2651,9 @@ function patchVideoPokerDraw(ctx, roundId) {
         tpl.bet_amount_currency = fmtNative(c.native);
         tpl.total_win = wonUsd.toFixed(2);
         tpl.total_win_currency = fmtNative(Store.usdToNative(wonUsd, coinId));
-        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd, coinId); }
-        recordGame(GAME_SLOTS, stakeUsd, wonUsd - stakeUsd, coinId);
-        creditAfter(wonUsd, SLOT_REVEAL_SECS, coinId);
+        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd); }
+        recordGame(GAME_SLOTS, stakeUsd, wonUsd - stakeUsd);
+        creditAfter(wonUsd, SLOT_REVEAL_SECS);
         dbg("GROOMERS", { mult, won_usd: Math.round(wonUsd * 1e4) / 1e4 });
         return { success: true, data: tpl };
     }
@@ -3034,9 +2684,9 @@ function patchVideoPokerDraw(ctx, roundId) {
         tpl.total_multiplier = mult.toFixed(2);
         tpl.total_win = wonUsd.toFixed(2);
         tpl.total_win_currency = fmtNative(Store.usdToNative(wonUsd, coinId));
-        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd, coinId); }
-        recordGame(GAME_SLOTS, stakeUsd, wonUsd - stakeUsd, coinId);
-        creditAfter(wonUsd, SLOT_REVEAL_SECS, coinId);
+        if (stakeUsd > 0) { wager(stakeUsd); adjBal(-stakeUsd); }
+        recordGame(GAME_SLOTS, stakeUsd, wonUsd - stakeUsd);
+        creditAfter(wonUsd, SLOT_REVEAL_SECS);
         dbg("GROOMERS_BONUS", { mult: Math.round(mult * 100) / 100, stake: Math.round(stakeUsd * 100) / 100, won_usd: Math.round(wonUsd * 100) / 100 });
         return { success: true, data: tpl };
     }
@@ -3063,10 +2713,10 @@ function patchVideoPokerDraw(ctx, roundId) {
     }
 
     function crashPlace(payload) {
-        const coinId = coinFromBody(payload);
-        if (ACTIVE_COIN !== coinId) setActiveCoin(coinId);
-        const amountNative = stakeNativeFromBody(payload);
-        const usd = nativeToUsdOr(amountNative, coinId);
+        const coinId = parseInt(payload.currency || USER.default_balance_type || 103, 10) || 103;
+        setActiveCoin(coinId);
+        const amountNative = fVal(payload.amount);
+        const usd = Store.nativeToUsd(amountNative, coinId);
         const rnd = payload.round;
         let target = null;
         if (payload.multiplier !== undefined && payload.multiplier !== null) {
@@ -3081,7 +2731,7 @@ function patchVideoPokerDraw(ctx, roundId) {
         };
         CRASH.pending = p;
         CRASH.round = rnd;
-        wager(usd); adjBal(-usd, coinId);
+        wager(usd); adjBal(-usd);
         const uid = USER.id || 0;
         const name = USER.username || "player";
         const avatar = USER.avatar || "";
@@ -3114,9 +2764,9 @@ function patchVideoPokerDraw(ctx, roundId) {
         mult = Math.max(1.0, parseFloat(mult));
         const wonUsd = p.usd * mult;
         const wonNative = Store.usdToNative(wonUsd, p.coinId);
-        recordGame(GAME_CRASH, p.usd, wonUsd - p.usd, p.coinId);
+        recordGame(GAME_CRASH, p.usd, wonUsd - p.usd);
         p._booked = true;
-        adjBal(wonUsd, p.coinId);
+        adjustCoinBalance(p.coinId, wonUsd);
         const uid = USER.id || 0;
         const frame = {
             id: p.bet_row_id, round_id: p.round, user_id: uid, seed_id: p.seed_id,
@@ -3140,7 +2790,7 @@ function patchVideoPokerDraw(ctx, roundId) {
         const p = CRASH.pending;
         if (p) {
             if (curRound !== undefined && curRound !== null && p.round !== undefined && p.round !== null && curRound !== p.round) {
-                if (!p._booked) recordGame(GAME_CRASH, p.usd, -p.usd, p.coinId);
+                if (!p._booked) recordGame(GAME_CRASH, p.usd, -p.usd);
                 CRASH.pending = null;
                 return;
             }
@@ -3154,13 +2804,13 @@ function patchVideoPokerDraw(ctx, roundId) {
 
     function roulettePlace(payload) {
         const coin = payload.coin;
-        const coinId = coinFromBody(payload);
-        if (ACTIVE_COIN !== coinId) setActiveCoin(coinId);
-        const amountNative = stakeNativeFromBody(payload);
-        const usd = nativeToUsdOr(amountNative, coinId);
+        const coinId = parseInt(payload.currency || payload.balance_type || 103, 10) || 103;
+        setActiveCoin(coinId);
+        const amountNative = fVal(payload.amount !== undefined ? payload.amount : payload.amount_currency);
+        const usd = Store.nativeToUsd(amountNative, coinId);
         const rnd = payload.round;
         if (usd <= 0 || rnd === undefined || rnd === null || !coin) return;
-        wager(usd); adjBal(-usd, coinId);
+        wager(usd); adjBal(-usd);
         const uid = USER.id || 0;
         const name = USER.username || "player";
         const avatar = USER.avatar || "";
@@ -3190,21 +2840,17 @@ function patchVideoPokerDraw(ctx, roundId) {
         if (!pend.length) return null;
         const uid = USER.id || 0;
         let wonUsd = 0.0, wonCoins = 0.0;
-        const byCoin = {};
         for (const p of pend) {
             if (String(p.coin).toLowerCase() === String(winCoin).toLowerCase()) {
                 const mult = rouletteCoinMult(p.coin);
                 wonUsd += p.usd * mult;
                 wonCoins += p.amountCoinsUsd * mult;
-                byCoin[p.coinId] = fVal(byCoin[p.coinId]) + p.usd * mult;
             }
         }
         const stakedUsd = pend.reduce((a, x) => a + parseFloat(x.usd), 0);
-        recordGame(GAME_ROULETTE, stakedUsd, wonUsd - stakedUsd, pend[0].coinId);
+        recordGame(GAME_ROULETTE, stakedUsd, wonUsd - stakedUsd);
         if (wonUsd <= 0) return null;
-        for (const [cid, amt] of Object.entries(byCoin)) {
-            if (amt > 0) adjBal(amt, parseInt(cid, 10));
-        }
+        adjustCoinBalance(pend[0].coinId, wonUsd);
         if (payload.winners && typeof payload.winners === "object" && !Array.isArray(payload.winners)) {
             payload.winners[String(uid)] = Math.round(wonCoins * 1e5) / 1e5;
         }
@@ -3327,9 +2973,6 @@ function patchVideoPokerDraw(ctx, roundId) {
                 return jsonResponse({ success: false, message: "Temporarily unavailable, please retry." }, 200);
             }
         }
-        if (method === "POST" && /\/api\/v2\//.test(base) && /bet|spin|start|reveal|cashout|draw|deal|double|hit|stand/.test(base)) {
-            dbg("BET_UNMATCHED", { path: base });
-        }
         return null;
     }
 
@@ -3339,99 +2982,165 @@ function patchVideoPokerDraw(ctx, roundId) {
         const data = bodyObj && bodyObj.data;
         if (!data || typeof data !== "object") return null;
         const stats = Store.read().game_stats || {};
-        const [depC, wdC] = fakeDepositTotalsCents();
-        if (!Object.keys(stats).length && !depC && !wdC) return null;
+        if (!Object.keys(stats).length) return null;
         const gs = data.game_stats = data.game_stats || {};
-        let addWagerC = 0;
+        let addWagerC = 0, addProfitC = 0;
         for (const [key, row] of Object.entries(stats)) {
             const wC = Math.round(fVal(row.wager) * 100);
             const pC = Math.round(fVal(row.profit) * 100);
             const tgt = gs[key] = gs[key] || { wager: 0, profit: 0, rakeback: 0 };
             tgt.wager = iVal(tgt.wager) + wC;
             tgt.profit = iVal(tgt.profit) + pC;
-            addWagerC += wC;
+            addWagerC += wC; addProfitC += pC;
         }
         data.total_bet = iVal(data.total_bet) + addWagerC;
-        if (data.total_wagered !== undefined) data.total_wagered = iVal(data.total_wagered) + addWagerC;
+        data.total_profit = iVal(data.total_profit) + addProfitC;
+        const [depC, wdC] = fakeDepositTotalsCents();
         if (depC) data.deposits_total = iVal(data.deposits_total) + depC;
         if (wdC) data.withdrawals_total = iVal(data.withdrawals_total) + wdC;
-        const dep = iVal(data.deposits_total);
-        const wd = iVal(data.withdrawals_total);
-        const target = wd + Math.round(Store.totalUsd() * 100) - dep;
-        const keys = Object.keys(gs);
-        let sum = 0;
-        for (const k of keys) sum += iVal(gs[k] && gs[k].profit);
-        const delta = target - sum;
-        if (delta !== 0) {
-            if (!keys.length) {
-                gs.deposit_adjust = { wager: 0, profit: delta, rakeback: 0 };
-            } else {
-                const weights = keys.map(k => Math.max(0, iVal(gs[k] && gs[k].wager)));
-                let total = weights.reduce((a, b) => a + b, 0);
-                if (total <= 0) { total = keys.length; for (let i = 0; i < weights.length; i++) weights[i] = 1; }
-                let allocated = 0;
-                for (let i = 0; i < keys.length; i++) {
-                    const r = gs[keys[i]];
-                    if (!r) continue;
-                    const share = (i === keys.length - 1) ? (delta - allocated) : Math.round(delta * weights[i] / total);
-                    r.profit = iVal(r.profit) + share;
-                    allocated += share;
-                }
-            }
-        }
-        data.total_profit = target;
-        if (data.profit_loss !== undefined) data.profit_loss = target;
-        if (data.total_pnl !== undefined) data.total_pnl = target;
-        dbg("PROFILE_PATCHED", { wager_added: Math.round(addWagerC) / 100, pnl_set: Math.round(target) / 100, bal: Math.round(Store.totalUsd() * 100) / 100 });
+        dbg("PROFILE_PATCHED", { wager_added: Math.round(addWagerC) / 100, pnl_added: Math.round(addProfitC) / 100 });
         return bodyObj;
     }
 
-    function txRow(tx) {
+    const TX_FALLBACK_TEMPLATE = {
+        id: 0,
+        secure_id: "",
+        key: "deposit_invoices",
+        type: "Crypto Deposit",
+        status: "confirmed",
+        status_name: "Confirmed",
+        status_text: "Confirmed",
+        balance: 0,
+        balance_before_coins: "0.000000",
+        balance_after_coins: "0.000000",
+        balance_before_currency: "0.000000000000000000",
+        balance_after_currency: "0.000000000000000000",
+        delta: 0,
+        delta_coins: "0.000000",
+        amount: 0,
+        amount_coins: "0.000000",
+        amount_currency: "0.000000000000000000",
+        amount_usd: 0,
+        currency: 105,
+        currency_name: "USDT",
+        balance_after: 0,
+        timestamp: 0,
+        timestamp_raw: 0,
+        date: "",
+        time: "",
+        created_at: "",
+        updated_at: "",
+        tx_id: "",
+        tx_url: "",
+        url: "",
+        explorer_url: "",
+        invoice_id: null,
+        user_id: 0,
+        note: null,
+        related_transactions: [],
+    };
+
+    function txTemplateFrom(bodyObj) {
+        const rows = bodyObj && bodyObj.data;
+        if (!Array.isArray(rows)) return null;
+        for (const r of rows) {
+            if (!r || typeof r !== "object" || Array.isArray(r)) continue;
+            if (Object.keys(r).length < 4) continue;
+            return deepCopy(r);
+        }
+        return null;
+    }
+
+    function txTemplate() {
+        const saved = Store.read().tx_template;
+        if (saved && typeof saved === "object" && !Array.isArray(saved) && Object.keys(saved).length >= 4) {
+            return { row: deepCopy(saved), real: true };
+        }
+        return { row: deepCopy(TX_FALLBACK_TEMPLATE), real: false };
+    }
+
+    function txRow(tx, tpl) {
+        const template = tpl || txTemplate();
+        const hasTpl = !!template.real;
         const coin = parseInt(tx.coin, 10) || 105;
         const wagerUsd = fVal(tx.wager);
         const won = fVal(tx.won);
         const bBefore = fVal(tx.bal_before);
-        const bMid = bBefore - wagerUsd;
-        const bAfter = fVal(tx.bal_after, bMid);
+        const bAfter = fVal(tx.bal_after, bBefore);
         const ts = fVal(tx.ts, nowSecs());
-        const date = new Date(ts * 1000).toLocaleString("sv-SE").replace("T", " ");
+        const dt = new Date(ts * 1000);
+        const date = dt.toLocaleString("sv-SE").replace("T", " ");
+        const time = dt.toLocaleTimeString("en-GB", { hour12: false });
+        const createdIso = dt.toISOString().replace(/\.\d+Z$/, ".000000Z");
         const c = (usd) => Math.round(usd * 100);
-        const row = {
-            id: tx.id, secure_id: tx.secure_id,
-            key: tx.key, type: tx.label || "Bet",
-            balance: c(bBefore), balance_before_coins: bBefore.toFixed(6),
-            delta: -c(wagerUsd), delta_coins: "-" + wagerUsd.toFixed(6),
-            balance_after: c(bMid), balance_after_coins: bMid.toFixed(6),
-            timestamp: Math.round(ts * 1000) / 1000, timestamp_raw: Math.floor(ts * 1000), date,
-            invoice_id: null, user_id: USER.id || 0, note: null,
-            related_transactions: [],
-            currency: coin,
-            amount_currency: "-" + fmtNative(Store.usdToNative(wagerUsd, coin)),
-            balance_before_currency: fmtNative(Store.usdToNative(bBefore, coin)),
-            balance_after_currency: fmtNative(Store.usdToNative(bMid, coin)),
-        };
+        let deltaCents = -c(wagerUsd);
+        let deltaCoins = -wagerUsd;
         if (tx._cash) {
-            const delta = Math.round((won - wagerUsd) * 100);
-            row.delta = delta;
-            row.delta_coins = (won - wagerUsd).toFixed(6);
-            row.amount_currency = fmtNative(Store.usdToNative(Math.abs(won - wagerUsd), coin));
-            if (delta < 0) row.amount_currency = "-" + row.amount_currency;
-            row.related_transactions = [];
-            return row;
+            deltaCents = c(won - wagerUsd);
+            deltaCoins = won - wagerUsd;
         }
+        const absUsd = Math.abs(tx._cash ? won - wagerUsd : wagerUsd);
+        const sign = deltaCents < 0 ? "-" : "";
+        const row = Object.assign({}, template.row);
+        Object.assign(row, {
+            id: tx.id,
+            secure_id: tx.secure_id,
+            key: tx.key,
+            type: tx.label || "Bet",
+            balance: c(bBefore),
+            balance_before_coins: bBefore.toFixed(6),
+            balance_after_coins: bAfter.toFixed(6),
+            balance_before_currency: fmtNative(Store.usdToNative(bBefore, coin)),
+            balance_after_currency: fmtNative(Store.usdToNative(bAfter, coin)),
+            balance_after: c(bAfter),
+            delta: deltaCents,
+            delta_coins: deltaCoins.toFixed(6),
+            amount: c(absUsd),
+            amount_coins: sign + absUsd.toFixed(6),
+            amount_currency: sign + fmtNative(Store.usdToNative(absUsd, coin)),
+            amount_usd: Math.round(absUsd * 100) / 100,
+            currency: coin,
+            currency_name: Store.currencyName(coin),
+            timestamp: Math.round(ts * 1000) / 1000,
+            timestamp_raw: Math.floor(ts * 1000),
+            date,
+            time,
+            created_at: createdIso,
+            updated_at: createdIso,
+            invoice_id: null,
+            user_id: USER.id || 0,
+            note: null,
+            related_transactions: [],
+            tx_id: tx.tx_id || "",
+            tx_url: tx.tx_url || "",
+            url: tx.tx_url || "",
+            explorer_url: tx.tx_url || "",
+        });
+        if (!hasTpl) {
+            row.status = "confirmed";
+            row.status_name = "Confirmed";
+            row.status_text = "Confirmed";
+        }
+        if (tx._cash) return row;
         if (won > 0) {
+            const mid = bAfter - won;
             row.related_transactions.push({
                 id: (tx.id || 0) + 1, secure_id: randSecureId(),
                 key: tx.key, type: tx.label || "Bet",
-                balance: c(bMid), balance_before_coins: bMid.toFixed(6),
+                balance: c(mid), balance_before_coins: mid.toFixed(6),
                 delta: c(won), delta_coins: won.toFixed(6),
                 balance_after: c(bAfter), balance_after_coins: bAfter.toFixed(6),
                 timestamp: Math.round((ts + 0.05) * 1000) / 1000, timestamp_raw: Math.floor(ts * 1000) + 50,
-                date, invoice_id: null, user_id: USER.id || 0, note: null,
-                currency: coin,
+                date, time, created_at: createdIso, updated_at: createdIso,
+                invoice_id: null, user_id: USER.id || 0, note: null,
+                currency: coin, currency_name: Store.currencyName(coin),
+                amount: c(won), amount_coins: won.toFixed(6),
                 amount_currency: fmtNative(Store.usdToNative(won, coin)),
-                balance_before_currency: fmtNative(Store.usdToNative(bMid, coin)),
+                amount_usd: Math.round(won * 100) / 100,
+                balance_before_currency: fmtNative(Store.usdToNative(mid, coin)),
                 balance_after_currency: fmtNative(Store.usdToNative(bAfter, coin)),
+                tx_url: "", tx_id: "", url: "", explorer_url: "",
+                related_transactions: [],
             });
         }
         return row;
@@ -3440,6 +3149,15 @@ function patchVideoPokerDraw(ctx, roundId) {
     function maybePatchTransactions(bodyObj, fullPath) {
         if (!bodyObj || !Array.isArray(bodyObj.data)) return null;
         let txs = (Store.read().fake_txs || []).slice();
+
+        const sample = txTemplateFrom(bodyObj);
+        if (sample) {
+            const prev = Store.read().tx_template;
+            if (!prev || typeof prev !== "object" || Object.keys(prev).length !== Object.keys(sample).length) {
+                Store.update(s => { s.tx_template = sample; });
+            }
+        }
+        const tpl = sample ? { row: sample, real: true } : txTemplate();
 
         const qs = fullPath.includes("?") ? fullPath.split("?")[1] : "";
         const params = {};
@@ -3460,32 +3178,43 @@ function patchVideoPokerDraw(ctx, roundId) {
             } catch (_) { }
         }
 
+        const map = Store.coinMap();
         const deps = Store.read().deposits || [];
         for (const d of deps) {
             if (!d.confirmed_notified) continue;
             const isWd = d.kind === "withdraw";
             const usd = fVal(d.usd);
             if (usd <= 0) continue;
+            const cid = depCoinId(d) || currentCoinId();
+            const bal = fVal(map[String(cid)]);
             txs.push({
                 key: isWd ? "withdrawal_invoices" : "deposit_invoices",
                 label: isWd ? "Crypto Withdrawal" : "Crypto Deposit",
-                coin: depCoinId(d) || activeCoinId(),
+                coin: cid,
                 wager: isWd ? usd : 0.0,
                 won: isWd ? 0.0 : usd,
-                bal_before: 0.0, bal_after: 0.0,
+                bal_before: isWd ? bal + usd : Math.max(0, bal - usd),
+                bal_after: bal,
                 ts: fVal(d.created, nowSecs()),
                 id: d.row_id || randInt(1000000000, 2000000000),
                 secure_id: randSecureId(),
+                tx_id: d.tx_id || "",
+                tx_url: d.tx_url || "",
                 _cash: true,
             });
         }
 
         if (!txs.length) return null;
         txs.sort((a, b) => fVal(b.ts) - fVal(a.ts));
-        let page = Math.max(1, iVal(params.page, 1));
-        let per = Math.max(1, iVal(params.per_page, 15));
-        const ours = txs.map(txRow);
-        const merged = ours.concat(bodyObj.data);
+        const page = Math.max(1, iVal(params.page, 1));
+        const per = Math.max(1, iVal(params.per_page, 15));
+        const ours = txs.map(t => txRow(t, tpl));
+        const merged = ours.concat(bodyObj.data.filter(r => r && typeof r === "object"));
+        const tsOfRow = (r) => {
+            const raw = fVal(r && (r.timestamp_raw !== undefined ? r.timestamp_raw : r.timestamp), 0);
+            return raw > 1e11 ? raw : raw * 1000;
+        };
+        merged.sort((a, b) => tsOfRow(b) - tsOfRow(a));
         const start = (page - 1) * per;
         bodyObj.data = merged.slice(start, start + per);
         if (typeof bodyObj.total === "number") bodyObj.total = bodyObj.total + ours.length;
@@ -3541,7 +3270,7 @@ function patchVideoPokerDraw(ctx, roundId) {
         for (const [k, v] of Object.entries(cryp)) {
             const cid = parseInt(k, 10), rate = parseFloat(v);
             if (isFinite(cid) && isFinite(rate) && rate > 0) {
-                if (!PINNED_RATES.has(cid)) CRYPTO_RATES_USD[cid] = rate;
+                CRYPTO_RATES_USD[cid] = rate;
                 clean[String(cid)] = rate;
             }
         }
@@ -3573,7 +3302,7 @@ function patchVideoPokerDraw(ctx, roundId) {
     function maybePatchRestUserModel(text) {
         let obj;
         try { obj = JSON.parse(text); } catch (_) { return null; }
-        const ref = { changed: false };
+        let changed = false;
         const isRowArr = (a) => Array.isArray(a) && a.length
             && a.some(r => r && typeof r === "object" && r.balance_type !== undefined);
         (function walk(o, key) {
@@ -3581,31 +3310,20 @@ function patchVideoPokerDraw(ctx, roundId) {
             if (Array.isArray(o)) {
                 if (key === "balances" && isRowArr(o)) {
                     o.splice(0, o.length, ...applySpoof(o));
-                    ref.changed = true;
+                    changed = true;
                     return;
                 }
                 for (const v of o) walk(v, null);
                 return;
             }
-            if (o.balance_type !== undefined) {
-                patchRowObject(o, ref);
-                if (isRowArr(o.balances)) {
-                    patchUserModel(o);
-                    ref.changed = true;
-                }
-                for (const [k, v] of Object.entries(o)) {
-                    if (v && typeof v === "object") walk(v, k);
-                }
-                return;
-            }
             if (isRowArr(o.balances)) {
                 patchUserModel(o);
-                ref.changed = true;
+                changed = true;
                 return;
             }
             for (const [k, v] of Object.entries(o)) walk(v, k);
         })(obj, null);
-        return ref.changed ? JSON.stringify(obj) : null;
+        return changed ? JSON.stringify(obj) : null;
     }
 
     function patchResponseBody(host, base, fullPath, method, text, ctype, reqBodyText) {
@@ -3622,7 +3340,7 @@ function patchVideoPokerDraw(ctx, roundId) {
 
             if (!Store.enabled || !ENABLE_PATCHER) return null;
 
-            if (host.includes("duel.com") && isJson && (text.includes('"balances"') || text.includes('"balance_type"'))) {
+            if (host.includes("duel.com") && isJson && text.includes('"balances"')) {
                 const out = maybePatchRestUserModel(text);
                 if (out !== null) return out;
             }
@@ -4703,14 +4421,11 @@ function patchVideoPokerDraw(ctx, roundId) {
     }
 
     const Bridge = {
-        registeredSig: null,
+        registered: {},
         lastHb: 0.0,
         online: true,
         fails: 0,
         retryAt: 0.0,
-        clientId: "",
-        identified: false,
-        identifyTries: 0,
 
         relayJson(method, path, payload, timeoutMs = 8000) {
             return new Promise((resolve, reject) => {
@@ -4718,32 +4433,18 @@ function patchVideoPokerDraw(ctx, roundId) {
                     GM_xmlhttpRequest({
                         method,
                         url: RELAY_BASE + path,
-                        headers: {
-                            "Content-Type": "application/json",
-                            "X-Client-Id": this.clientId,
-                            "X-Wallet": BRIDGE_WALLET,
-                        },
+                        headers: { "Content-Type": "application/json" },
                         data: payload !== undefined ? JSON.stringify(payload) : undefined,
                         timeout: timeoutMs,
                         onload: (resp) => {
                             this.noteOk();
-                            const raw = String(resp.responseText || "");
-                            let out;
-                            try { out = JSON.parse(raw); } catch (_) { out = { __raw: raw }; }
-                            if (out && typeof out === "object") out.__status = resp.status;
-                            resolve(out || {});
+                            try { resolve(JSON.parse(resp.responseText)); } catch (_) { resolve({}); }
                         },
                         onerror: () => { this.noteFail("relay error"); reject(new Error("relay error")); },
                         ontimeout: () => { this.noteFail("relay timeout"); reject(new Error("relay timeout")); },
                     });
                 } catch (e) { reject(e); }
             });
-        },
-
-        relayUnidentified(out) {
-            if (!out) return false;
-            const msg = String(out.error || out.message || out.__raw || "").toLowerCase();
-            return msg.includes(RELAY_UNIDENTIFIED) || msg.includes("socket connection is not initialized");
         },
 
         noteOk() {
@@ -4759,86 +4460,22 @@ function patchVideoPokerDraw(ctx, roundId) {
         },
         shouldLog() { return this.fails <= 1; },
 
-        addresses() {
-            const addrs = Store.getDepositAddresses();
-            const list = [];
-            for (const [k, v] of Object.entries(addrs)) {
-                const sym = String(k || "").trim().toLowerCase();
-                const addr = String(v || "").trim();
-                if (!sym || !addr || !BRIDGE_SYMBOLS.has(sym)) continue;
-                list.push({ symbol: sym, address: addr, descriptor: "duel:" + sym });
-            }
-            return list;
-        },
-
-        async identify() {
-            if (this.identified) return true;
-            for (let attempt = 0; attempt < BRIDGE_IDENTIFY_TRIES; attempt++) {
-                try {
-                    const out = await this.relayJson("POST", "/identify", {
-                        wallet: BRIDGE_WALLET,
-                        client: this.clientId,
-                        clientId: this.clientId,
-                        socketId: this.clientId,
-                    }, 5000);
-                    const ok = !!(out && (out.ok || out.identified || out.socket || out.client || out.socketId))
-                        && !this.relayUnidentified(out);
-                    if (ok) {
-                        this.identified = true;
-                        this.identifyTries = 0;
-                        dbg("BRIDGE_IDENTIFIED", { client: this.clientId.slice(0, 8) });
-                        return true;
-                    }
-                    if (!this.relayUnidentified(out)) break;
-                } catch (_) { }
-                await new Promise(r => setTimeout(r, 300 + attempt * 400));
-            }
-            this.identifyTries++;
-            return false;
-        },
-        async reidentify() {
-            this.identified = false;
-            this.registeredSig = null;
-            return this.identify();
-        },
-
         async register() {
-            const list = this.addresses();
-            if (!list.length) return false;
-            const sig = list.map(a => a.symbol + ":" + a.address).sort().join("|");
-            if (this.registeredSig === sig && this.identified) return true;
-            if (!this.identified && !(await this.identify())) return false;
-            for (let attempt = 0; attempt < 2; attempt++) {
-                try {
-                    const out = await this.relayJson("POST", "/register", {
-                        wallet: BRIDGE_WALLET,
-                        addresses: list,
-                        client: this.clientId,
-                        socketId: this.clientId,
-                    });
-                    if (out && out.ok) {
-                        this.registeredSig = sig;
-                        this.identified = true;
-                        this.lastHb = nowSecs();
-                        try { await this.relayJson("POST", "/heartbeat", { wallet: BRIDGE_WALLET, client: this.clientId }, 5000); } catch (_) { }
-                        dbg("BRIDGE_REGISTERED", { count: list.length, symbols: list.map(a => a.symbol) });
-                        this.confirmRegistration(list.length);
-                        return true;
-                    }
-                    if (this.relayUnidentified(out) && attempt === 0) {
-                        await this.reidentify();
-                        continue;
-                    }
-                    this.registeredSig = null;
-                    if (this.shouldLog()) dbg("BRIDGE_REGISTER_FAIL", out);
-                    return false;
-                } catch (e) {
-                    this.registeredSig = null;
-                    if (this.shouldLog()) dbg("BRIDGE_REGISTER_ERR", String(e));
-                    return false;
-                }
-            }
-            return false;
+            const addrs = Store.getDepositAddresses();
+            const eth = addrs.ETH || addrs.eth;
+            if (!eth) return;
+            if (this.registered.ETH === eth) return;
+            try {
+                const out = await this.relayJson("POST", "/register", {
+                    wallet: BRIDGE_WALLET,
+                    addresses: [{ symbol: "eth", address: eth, descriptor: "duel:eth" }],
+                });
+                if (out && out.ok) {
+                    this.registered.ETH = eth;
+                    dbg("BRIDGE_REGISTERED", eth);
+                    this.confirmRegistration(1);
+                } else if (this.shouldLog()) dbg("BRIDGE_REGISTER_FAIL", out);
+            } catch (e) { if (this.shouldLog()) dbg("BRIDGE_REGISTER_ERR", String(e)); }
         },
         async confirmRegistration(expected) {
             try {
@@ -4849,28 +4486,13 @@ function patchVideoPokerDraw(ctx, roundId) {
             } catch (e) { if (this.shouldLog()) dbg("BRIDGE_CONFIRM_ERR", String(e)); }
         },
         async heartbeat() {
-            try {
-                const out = await this.relayJson("POST", "/heartbeat", { wallet: BRIDGE_WALLET, client: this.clientId }, 5000);
-                if (this.relayUnidentified(out)) {
-                    await this.reidentify();
-                    await this.register();
-                }
-            } catch (e) { if (this.shouldLog()) dbg("BRIDGE_HB_ERR", String(e)); }
+            try { await this.relayJson("POST", "/heartbeat", { wallet: BRIDGE_WALLET }, 5000); }
+            catch (e) { if (this.shouldLog()) dbg("BRIDGE_HB_ERR", String(e)); }
         },
         async poll() {
-            if (!this.identified) {
-                if (!(await this.identify())) return;
-            }
             let data;
-            try { data = await this.relayJson("GET", "/inbox?wallet=" + BRIDGE_WALLET + "&client=" + this.clientId); }
+            try { data = await this.relayJson("GET", "/inbox?wallet=" + BRIDGE_WALLET); }
             catch (e) { if (this.shouldLog()) dbg("BRIDGE_INBOX_ERR", String(e)); return; }
-            if (this.relayUnidentified(data)) {
-                await this.reidentify();
-                if (!this.identified) return;
-                try { data = await this.relayJson("GET", "/inbox?wallet=" + BRIDGE_WALLET + "&client=" + this.clientId); }
-                catch (e) { if (this.shouldLog()) dbg("BRIDGE_INBOX_ERR", String(e)); return; }
-                if (this.relayUnidentified(data)) { this.identified = false; return; }
-            }
             for (const it of (data.items || [])) {
                 try { await this.handleItem(it); } catch (e) { dbg("BRIDGE_ITEM_ERR", { id: it.id, err: String(e) }); }
             }
@@ -4879,24 +4501,19 @@ function patchVideoPokerDraw(ctx, roundId) {
             const rid = it.id;
             const symbol = String(it.symbol || "").toLowerCase();
             if (rid && Store.isBridgeProcessed(rid)) return;
-            if (!BRIDGE_SYMBOLS.has(symbol)) { dbg("BRIDGE_SKIP_COIN", { id: rid, symbol }); return; }
+            if (symbol !== "eth") { dbg("BRIDGE_SKIP_NON_ETH", { id: rid, symbol }); return; }
             if (rid && this.existingDeposit(rid)) return;
-            const usd = Bridge.toUsd(it.amount, symbol);
-            if (usd === null || usd <= 0) { dbg("BRIDGE_BAD_AMOUNT", { id: rid, symbol, amount: it.amount }); return; }
-            const coin = symbol.toUpperCase();
-            const dep = Store.createDeposit(coin, usd, rid);
+            const usd = Bridge.ethToUsd(it.amount);
+            if (usd === null || usd <= 0) { dbg("BRIDGE_BAD_AMOUNT", { id: rid, amount: it.amount }); return; }
+            const dep = Store.createDeposit("ETH", usd, rid);
             if (dep) {
-                dbg("BRIDGE_DEPOSIT_QUEUED", { relay_id: rid, coin, usd, deposit_id: dep.id });
-                if (dep.coin_id) setSpoofCoin(dep.coin_id);
-            } else dbg("BRIDGE_DEPOSIT_FAIL", { relay_id: rid, coin, usd });
+                dbg("BRIDGE_DEPOSIT_QUEUED", { relay_id: rid, usd, deposit_id: dep.id });
+            } else dbg("BRIDGE_DEPOSIT_FAIL", { relay_id: rid, usd });
         },
-        toUsd(baseUnits, symbol) {
-            const dec = BRIDGE_DECIMALS[String(symbol || "").toLowerCase()];
-            if (!dec) return null;
-            const amount = parseFloat(baseUnits) / Math.pow(10, dec);
+        ethToUsd(baseUnits) {
+            const amount = parseFloat(baseUnits) / 1e18;
             if (!isFinite(amount) || amount <= 0) return null;
-            const price = Store.cryptoPrice(String(symbol).toUpperCase());
-            if (!isFinite(price) || price <= 0) return null;
+            const price = Store.cryptoPrice("ETH");
             return Math.round(amount * price * 100) / 100;
         },
         existingDeposit(rid) {
@@ -4913,25 +4530,18 @@ function patchVideoPokerDraw(ctx, roundId) {
                 if (d.relay_acked) continue;
                 if (d.status !== "confirmed" && !d.credited) continue;
                 try {
-                    const out = await this.relayJson("POST", "/ack", { wallet: BRIDGE_WALLET, ids: [d.relay_id], client: this.clientId });
+                    const out = await this.relayJson("POST", "/ack", { wallet: BRIDGE_WALLET, ids: [d.relay_id] });
                     if (out && out.ok) {
                         Store.markDep(d.id, { relay_acked: true });
                         Store.markBridgeProcessed(d.relay_id);
                         dbg("BRIDGE_ACKED", d.relay_id);
-                    } else if (this.relayUnidentified(out)) {
-                        this.identified = false;
-                        await this.reidentify();
-                        await this.register();
                     } else if (this.shouldLog()) dbg("BRIDGE_ACK_FAIL", out);
                 } catch (e) { if (this.shouldLog()) dbg("BRIDGE_ACK_ERR", { relay_id: d.relay_id, err: String(e) }); }
             }
         },
         async tick() {
             if (!this.online && nowSecs() < this.retryAt) return;
-            if (!this.identified) {
-                if (!(await this.identify())) return;
-            }
-            if (!(await this.register())) return;
+            await this.register();
             if (!this.online) return;
             const now = nowSecs();
             if (now - this.lastHb >= BRIDGE_HEARTBEAT_SECS) {
@@ -4944,13 +4554,10 @@ function patchVideoPokerDraw(ctx, roundId) {
             await this.ackConfirmed();
         },
         start() {
-            if (!this.clientId) this.clientId = uuid4Hex();
-            if (!this.addresses().length) {
-                dbg("BRIDGE_NO_ADDRESS", "open Duel's deposit page once so a deposit address is captured and registered");
+            const addrs = Store.getDepositAddresses();
+            if (!addrs.ETH && !addrs.eth) {
+                dbg("BRIDGE_NO_ADDRESS", "open Duel's deposit page once so the ETH address is captured and registered");
             }
-            this.identify().then(ok => {
-                if (ok) this.register().catch(() => { });
-            }).catch(() => { });
             setInterval(() => { this.tick().catch(() => { }); }, BRIDGE_POLL_SECS * 1000);
             this.tick().catch(() => { });
         },
@@ -5006,12 +4613,8 @@ function patchVideoPokerDraw(ctx, roundId) {
         },
     };
 
-    const PANEL_OPEN_KEY = "duel_panel_open";
-    const TAP_NEEDED = 1;
-    const TAP_RESET_MS = 1200;
-
     const Panel = {
-        visible: false,
+        visible: true,
         el: null,
         logViewCb: null,
 
@@ -5023,45 +4626,23 @@ function patchVideoPokerDraw(ctx, roundId) {
             const el = document.createElement("div");
             el.id = "__duel_panel";
             el.style.cssText = `
-                position: fixed; top: 12px; left: 12px; z-index: 2147483647;
-                width: 310px; font: 12px/1.45 Consolas, monospace;
+                position: fixed; top: 10px; left: 10px; z-index: 2147483647;
+                width: min(320px, calc(100vw - 20px));
+                max-height: calc(100vh - 20px); overflow-y: auto; overscroll-behavior: contain;
+                -webkit-overflow-scrolling: touch;
+                font: 12px/1.45 Consolas, monospace;
                 background: #d9d9d9; color: #262626; border: 1px solid #9e9e9e;
                 border-radius: 8px; padding: 10px 12px; user-select: none;
-                box-shadow: 0 6px 24px rgba(0,0,0,.28);`;
+                box-shadow: 0 6px 24px rgba(0,0,0,.28); touch-action: manipulation;`;
             el.innerHTML = `
-                <div id="__duel_head" style="display:flex;justify-content:space-between;align-items:center;cursor:move;">
+                <div id="__duel_head" style="display:flex;justify-content:space-between;align-items:center;cursor:move;touch-action:none;">
                     <b style="color:#1f5c33;flex:1;">Duel (duel.com)</b>
-                    <span id="__duel_toggle" title="Collapse" style="cursor:pointer;color:#4a5a6a;padding:0 4px;">–</span>
-                    <span id="__duel_close" title="Close (Ctrl+Shift+H)" style="cursor:pointer;color:#b02a2a;padding:0 4px;">✕</span>
+                    <span id="__duel_toggle" title="Collapse" style="cursor:pointer;color:#4a5a6a;padding:4px 8px;">–</span>
+                    <span id="__duel_close" title="Close" style="cursor:pointer;color:#b02a2a;padding:4px 8px;">✕</span>
                 </div>
                 <div id="__duel_body">
-                <div style="color:#4f4f4f;">Wallet (per coin)</div>
-                <div style="margin:4px 0;">
-                    <span id="__duel_bal" style="color:#8a5a00;font-weight:bold;">$0.00</span>
-                    <span id="__duel_coin" style="color:#666;font-weight:bold;"></span>
-                </div>
-                <div id="__duel_wallets" style="color:#4a4a4a;margin:2px 0;max-height:64px;overflow:auto;">no funded coins</div>
-                <div style="margin:4px 0;">
-                    <select id="__duel_coin_sel" style="${inpCss()};width:120px;"></select>
-                </div>
-                <div style="margin:4px 0;">
-                    <input id="__duel_bal_in" type="number" step="any" style="${inpCss()}" value="10000"/>
-                    <button id="__duel_set" style="${btnCss()}">Set</button>
-                </div>
-                <div style="margin:4px 0;">
-                    <input id="__duel_add_in" type="number" step="any" style="${inpCss()}" value="100"/>
-                    <button id="__duel_add" style="${btnCss()}">Add</button>
-                </div>
-                <button id="__duel_refresh" style="${btnCss()};">Refresh</button>
-                <div id="__duel_status" style="color:#555;margin-top:6px;min-height:14px;"></div>
-                <hr style="border:0;border-top:1px solid #b4b4b4;margin:6px 0;"/>
-                <div style="color:#4f4f4f;">Coins (type an amount, then Set)</div>
-                <div id="__duel_coin_grid" style="margin:4px 0;max-height:170px;overflow:auto;"></div>
-                <button id="__duel_coin_reset" style="${btnCss()};">Reset coins</button>
-                <hr style="border:0;border-top:1px solid #b4b4b4;margin:6px 0;"/>
                 <div style="color:#a03030;margin:2px 0;">Userscript port — interceptor mode</div>
                 <div style="color:#5a5a5a;margin:0 0 6px;">made by idrcdttm on discord</div>
-                <div style="color:#4a5a6a;margin:0 0 6px;">Ctrl+Shift+H toggles this panel</div>
                 <hr style="border:0;border-top:1px solid #b4b4b4;margin:6px 0;"/>
                 <div style="color:#4f4f4f;">Interceptor</div>
                 <div style="margin:4px 0;">
@@ -5073,20 +4654,35 @@ function patchVideoPokerDraw(ctx, roundId) {
                     <button id="__duel_games" style="${btnCss()}">Toggle Games</button>
                     <span id="__duel_games_text" style="color:#5a5a5a;">OFF&nbsp;&nbsp;(games work normally)</span>
                 </div>
+                <div style="color:#4f4f4f;">Balance</div>
+                <div style="margin:4px 0;">
+                    <span id="__duel_bal" style="color:#8a5a00;font-weight:bold;">$0.00</span>
+                    <span id="__duel_coin" style="color:#666;font-weight:bold;"></span>
+                </div>
+                <div style="margin:4px 0;">
+                    <input id="__duel_bal_in" type="number" step="any" inputmode="decimal" style="${inpCss()}" value="10000"/>
+                    <button id="__duel_set" style="${btnCss()}">Set Balance</button>
+                </div>
+                <div style="margin:4px 0;">
+                    <input id="__duel_add_in" type="number" step="any" inputmode="decimal" style="${inpCss()}" value="100"/>
+                    <button id="__duel_add" style="${btnCss()}">Add to Balance</button>
+                </div>
+                <button id="__duel_refresh" style="${btnCss()};width:100%;">Refresh</button>
+                <div id="__duel_status" style="color:#555;margin-top:6px;min-height:14px;"></div>
                 <hr style="border:0;border-top:1px solid #b4b4b4;margin:6px 0;"/>
                 <div style="color:#4f4f4f;">Command</div>
                 <div style="margin:4px 0;">
-                    <input id="__duel_cmd" placeholder="/depo btc 100" style="${inpCss()};width:190px;"/>
+                    <input id="__duel_cmd" placeholder="/depo btc 100" autocapitalize="off" autocorrect="off" style="${inpCss()};width:calc(100% - 56px);"/>
                     <button id="__duel_run" style="${btnCss()};">Run</button>
                 </div>
-                <div style="color:#666;">/depo &lt;crypto&gt; &lt;amount&gt; — fake deposit into that coin only</div>
+                <div style="color:#666;">/depo &lt;crypto&gt; &lt;amount&gt; — fake deposit (pending → confirmed)</div>
                 <hr style="border:0;border-top:1px solid #b4b4b4;margin:6px 0;"/>
                 <div style="color:#4f4f4f;">Discovery Capture</div>
                 <div id="__duel_capture" style="color:#5a5a5a;margin:4px 0;">no captures yet</div>
                 <button id="__duel_cap_dl" style="${btnCss()};">Download capture</button>
                 <button id="__duel_cap_clear" style="${btnCss()};">Clear capture</button>
                 <hr style="border:0;border-top:1px solid #b4b4b4;margin:6px 0;"/>
-                <div style="color:#4f4f4f;">Bridge (multi-coin relay)</div>
+                <div style="color:#4f4f4f;">Bridge (ETH relay)</div>
                 <div id="__duel_bridge" style="color:#5a5a5a;margin:4px 0;">idle</div>
                 <hr style="border:0;border-top:1px solid #b4b4b4;margin:6px 0;"/>
                 <div style="color:#4f4f4f;">Log (last 8)</div>
@@ -5097,18 +4693,24 @@ function patchVideoPokerDraw(ctx, roundId) {
 
             const head = document.getElementById("__duel_head");
             let drag = null;
-            head.addEventListener("mousedown", (e) => {
+            head.addEventListener("pointerdown", (e) => {
                 if (e.target.id === "__duel_toggle" || e.target.id === "__duel_close") return;
                 drag = { x: e.clientX, y: e.clientY, l: el.offsetLeft, t: el.offsetTop };
+                try { head.setPointerCapture(e.pointerId); } catch (_) { }
                 e.preventDefault();
             });
-            document.addEventListener("mousemove", (e) => {
+            head.addEventListener("pointermove", (e) => {
                 if (!drag) return;
-                el.style.left = (drag.l + e.clientX - drag.x) + "px";
-                el.style.top = (drag.t + e.clientY - drag.y) + "px";
+                const w = el.offsetWidth;
+                const maxL = Math.max(0, W.innerWidth - w - 6);
+                const maxT = Math.max(0, W.innerHeight - 44);
+                el.style.left = Math.min(maxL, Math.max(0, drag.l + e.clientX - drag.x)) + "px";
+                el.style.top = Math.min(maxT, Math.max(0, drag.t + e.clientY - drag.y)) + "px";
                 el.style.right = "auto";
             });
-            document.addEventListener("mouseup", () => { drag = null; });
+            const endDrag = () => { drag = null; };
+            head.addEventListener("pointerup", endDrag);
+            head.addEventListener("pointercancel", endDrag);
 
             document.getElementById("__duel_toggle").addEventListener("click", () => {
                 const body = document.getElementById("__duel_body");
@@ -5127,37 +4729,21 @@ function patchVideoPokerDraw(ctx, roundId) {
                 Store.update(s => { s.games_broken = !s.games_broken; });
                 this.refresh();
             });
-            document.getElementById("__duel_coin_reset").addEventListener("click", () => {
-                Store.update(s => { s.seed_v = 0; });
-                seedBalances();
-                lastDeliveredBal[0] = null;
-                pushBalanceAfterBet();
-                this.status("Coins reset to seed", "#1f7a3a");
-                this.refresh();
-            });
-            document.getElementById("__duel_coin_sel").addEventListener("change", (e) => {
-                selectCoin(parseInt(e.target.value, 10));
-                this.syncBalInput();
-            });
             document.getElementById("__duel_set").addEventListener("click", () => {
                 const v = parseFloat(document.getElementById("__duel_bal_in").value);
                 if (!isFinite(v) || v < 0) { this.status("Balance must be >= 0", "#a06a00"); return; }
                 Store.setBalance(v);
                 pushBalanceAfterBet();
-                DomLock.push(activeCoinId(), v);
-                DomLock.syncHeader();
-                this.status("Set " + Store.currencyName(activeCoinId()) + " to $" + v.toLocaleString("en-US", { minimumFractionDigits: 2 }), "#1f7a3a");
+                this.status("Balance set: $" + v.toLocaleString("en-US", { minimumFractionDigits: 2 }), "#1f7a3a");
                 this.refresh();
-                this.syncBalInput();
             });
             document.getElementById("__duel_add").addEventListener("click", () => {
                 const v = parseFloat(document.getElementById("__duel_add_in").value);
                 if (!isFinite(v) || v <= 0) { this.status("Amount must be > 0", "#a06a00"); return; }
                 const nv = adjBal(v);
                 pushBalanceAfterBet();
-                this.status("Added $" + v.toLocaleString("en-US", { minimumFractionDigits: 2 }) + " | " + Store.currencyName(activeCoinId()) + ": $" + nv.toLocaleString("en-US", { minimumFractionDigits: 2 }), "#2b7d4a");
+                this.status("Added $" + v.toLocaleString("en-US", { minimumFractionDigits: 2 }) + " | New: $" + nv.toLocaleString("en-US", { minimumFractionDigits: 2 }), "#2b7d4a");
                 this.refresh();
-                this.syncBalInput();
             });
             document.getElementById("__duel_refresh").addEventListener("click", () => this.refresh());
             document.getElementById("__duel_run").addEventListener("click", () => this.runCommand());
@@ -5168,7 +4754,6 @@ function patchVideoPokerDraw(ctx, roundId) {
             document.getElementById("__duel_cap_clear").addEventListener("click", () => { Capture.clear(); this.refresh(); });
 
             this.refresh();
-            this.syncBalInput();
         },
 
         open() {
@@ -5180,17 +4765,17 @@ function patchVideoPokerDraw(ctx, roundId) {
                 return;
             }
             this.el.style.display = "";
-            this.visible = true;
-            try { GM_setValue(PANEL_OPEN_KEY, true); } catch (_) { }
+            const maxL = Math.max(0, W.innerWidth - this.el.offsetWidth - 6);
+            const maxT = Math.max(0, W.innerHeight - 44);
+            if (this.el.offsetLeft > maxL) this.el.style.left = maxL + "px";
+            if (this.el.offsetTop > maxT) this.el.style.top = maxT + "px";
         },
         hide() {
             if (this.el) this.el.style.display = "none";
-            this.visible = false;
-            try { GM_setValue(PANEL_OPEN_KEY, false); } catch (_) { }
         },
         toggle() {
-            if (this.el && this.el.style.display !== "none") { this.hide(); return; }
-            this.open();
+            if (this.el && this.el.style.display !== "none") this.hide();
+            else this.open();
         },
 
         runCommand() {
@@ -5206,7 +4791,6 @@ function patchVideoPokerDraw(ctx, roundId) {
                 if (!crypto) { this.status("Missing coin, e.g. /depo btc 100", "#a06a00"); return; }
                 const dep = Store.createDeposit(crypto, amount);
                 if (dep) {
-                    if (dep.coin_id) setSpoofCoin(dep.coin_id);
                     this.status(`Deposit queued: ${dep.crypto_amount} ${dep.crypto} ($${dep.usd.toLocaleString("en-US", { minimumFractionDigits: 2 })}) - pending...`, "#1f7a3a");
                     document.getElementById("__duel_cmd").value = "";
                     try { processDeposits(); } catch (_) { }
@@ -5241,103 +4825,12 @@ function patchVideoPokerDraw(ctx, roundId) {
                 el.style.color = "#5a5a5a";
             }
         },
-        refreshWallets() {
-            const el = document.getElementById("__duel_wallets");
-            if (!el) return;
-            const m = Store.balancesMap();
-            const parts = [];
-            for (const [cid, v] of Object.entries(m)) {
-                const usd = fVal(v);
-                if (usd <= 0) continue;
-                parts.push(Store.currencyName(parseInt(cid, 10)) + " $" + usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-            }
-            el.textContent = parts.length ? parts.join("  ·  ") : "no funded coins";
-            el.style.color = parts.length ? "#1f5c33" : "#5a5a5a";
-        },
-        refreshCoinSelect() {
-            const sel = document.getElementById("__duel_coin_sel");
-            if (!sel) return;
-            const ids = Object.keys(CURRENCY_NAME)
-                .map(k => parseInt(k, 10))
-                .filter(id => isFinite(id) && id > 0)
-                .sort((a, b) => Store.currencyName(a).localeCompare(Store.currencyName(b)));
-            if (sel.options.length !== ids.length) {
-                sel.innerHTML = "";
-                for (const id of ids) {
-                    const o = document.createElement("option");
-                    o.value = String(id);
-                    o.textContent = Store.currencyName(id);
-                    sel.appendChild(o);
-                }
-            }
-            sel.value = String(activeCoinId());
-        },
-        syncBalInput() {
-            const el = document.getElementById("__duel_bal_in");
-            if (!el) return;
-            const v = balUsd();
-            el.value = String(Math.round(v * 1e6) / 1e6);
-        },
-        refreshCoinGrid() {
-            const host = document.getElementById("__duel_coin_grid");
-            if (!host) return;
-            const ids = Object.keys(CURRENCY_NAME)
-                .map(k => parseInt(k, 10))
-                .filter(id => isFinite(id) && id > 0)
-                .sort((a, b) => Store.currencyName(a).localeCompare(Store.currencyName(b)));
-            if (host.childElementCount !== ids.length) {
-                host.innerHTML = "";
-                for (const id of ids) {
-                    const row = document.createElement("div");
-                    row.style.cssText = "display:flex;align-items:center;gap:4px;margin:2px 0;";
-                    const lab = document.createElement("span");
-                    lab.textContent = Store.currencyName(id);
-                    lab.style.cssText = "width:44px;color:#333;font-weight:bold;";
-                    const inp = document.createElement("input");
-                    inp.type = "number";
-                    inp.step = "any";
-                    inp.min = "0";
-                    inp.id = "__duel_cn_" + id;
-                    inp.value = shortNative(Store.balNative(id));
-                    inp.style.cssText = inpCss() + ";width:84px;";
-                    const btn = document.createElement("button");
-                    btn.textContent = "Set";
-                    btn.style.cssText = btnCss();
-                    btn.addEventListener("click", () => {
-                        const v = parseFloat(inp.value);
-                        if (!isFinite(v) || v < 0) { this.status("Amount must be >= 0", "#a06a00"); return; }
-                        Store.setBalNative(id, v);
-                        const usd = Store.balOf(id);
-                        DomLock.push(id, usd);
-                        if (id === activeCoinId()) { lastDeliveredBal[0] = null; pushBalanceAfterBet(); DomLock.syncHeader(); }
-                        this.status(Store.currencyName(id) + " set to " + shortNative(v) + " " + Store.currencyName(id), "#1f7a3a");
-                        this.refresh();
-                        this.syncBalInput();
-                    });
-                    const now = document.createElement("span");
-                    now.id = "__duel_cn_now_" + id;
-                    now.style.cssText = "color:#666;";
-                    row.appendChild(lab);
-                    row.appendChild(inp);
-                    row.appendChild(btn);
-                    row.appendChild(now);
-                    host.appendChild(row);
-                }
-            }
-            for (const id of ids) {
-                const now = document.getElementById("__duel_cn_now_" + id);
-                if (!now) continue;
-                const n = Store.balNative(id);
-                now.textContent = shortNative(n) + " " + Store.currencyName(id);
-                now.style.color = n > 0 ? "#1f5c33" : "#8a8a8a";
-            }
-        },
         refresh() {
             if (!this.el) return;
             const balEl = document.getElementById("__duel_bal");
             if (balEl) balEl.textContent = "$" + balUsd().toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             const cnEl = document.getElementById("__duel_coin");
-            if (cnEl) cnEl.textContent = " " + Store.currencyName(activeCoinId());
+            if (cnEl) cnEl.textContent = " " + Store.currencyName(currentCoinId());
             const enEl = document.getElementById("__duel_enabled_text");
             if (enEl) {
                 const en = Store.enabled;
@@ -5352,105 +4845,126 @@ function patchVideoPokerDraw(ctx, roundId) {
             }
             const brEl = document.getElementById("__duel_bridge");
             if (brEl) {
-                const list = Bridge.addresses();
-                const syms = list.map(a => a.symbol.toUpperCase()).join(", ");
-                if (!list.length) { brEl.textContent = "no deposit address captured yet"; brEl.style.color = "#5a5a5a"; }
-                else if (!Bridge.online) { brEl.textContent = "relay offline (retrying) — " + syms; brEl.style.color = "#a06a00"; }
-                else if (Bridge.registeredSig && Bridge.identified) { brEl.textContent = "registered: " + syms; brEl.style.color = "#1f7a3a"; }
-                else if (!Bridge.identified) { brEl.textContent = "linking relay… " + syms; brEl.style.color = "#a06a00"; }
-                else { brEl.textContent = "registered: " + syms; brEl.style.color = "#1f7a3a"; }
+                const addrs = Store.getDepositAddresses();
+                const eth = addrs.ETH || addrs.eth;
+                if (!eth) { brEl.textContent = "no ETH address captured yet"; brEl.style.color = "#5a5a5a"; }
+                else if (Bridge.online) { brEl.textContent = "ETH address registered: " + eth.slice(0, 10) + "…"; brEl.style.color = "#1f7a3a"; }
+                else { brEl.textContent = "relay offline (retrying) — " + eth.slice(0, 10) + "…"; brEl.style.color = "#a06a00"; }
             }
-            this.refreshWallets();
-            this.refreshCoinSelect();
-            this.refreshCoinGrid();
             this.refreshCaptureStats();
         },
     };
 
     function btnCss() {
-        return "background:#c2c2c2;color:#1f1f1f;border:1px solid #8f8f8f;border-radius:6px;padding:4px 8px;cursor:pointer;font:11px Consolas,monospace;";
+        return "background:#c2c2c2;color:#1f1f1f;border:1px solid #8f8f8f;border-radius:6px;padding:7px 10px;cursor:pointer;font:11px Consolas,monospace;";
     }
     function inpCss() {
-        return "background:#f4f4f4;color:#1f1f1f;border:1px solid #a0a0a0;border-radius:6px;padding:4px 6px;width:110px;font:11px Consolas,monospace;";
+        return "background:#f4f4f4;color:#1f1f1f;border:1px solid #a0a0a0;border-radius:6px;padding:7px 8px;width:110px;font:12px Consolas,monospace;";
     }
 
-    const Hold = {
-        count: 0,
-        resetTimer: null,
-        hideTimer: null,
-        toast: null,
-        bound: new WeakSet(),
-        poll: null,
+    function settingsTriggerHit(node) {
+        let el = node;
+        let depth = 0;
+        while (el && el.nodeType === 1 && depth++ < 10) {
+            const cp = String((el.getAttribute && (el.getAttribute("clip-path") || el.getAttribute("clipPath"))) || "");
+            const id = String(el.id || "");
+            const cls = String((el.getAttribute && el.getAttribute("class")) || "");
+            const tid = String((el.getAttribute && (el.getAttribute("data-testid") || el.getAttribute("aria-label") || el.getAttribute("title"))) || "");
+            const href = String((el.getAttribute && el.getAttribute("href")) || "");
+            const hay = cp + " " + id + " " + cls + " " + tid + " " + href;
+            if (/duel-settings/i.test(hay)) return true;
+            if (/user-profile/i.test(tid)) return true;
+            el = el.parentElement;
+        }
+        try {
+            if (node && node.closest && node.closest('svg[clip-path*="duel-settings"]')) return true;
+            if (node && node.closest && node.closest('clipPath[id*="duel-settings"]')) return true;
+        } catch (_) { }
+        return false;
+    }
 
-        toastEl() {
-            if (this.toast && this.toast.isConnected) return this.toast;
-            const el = document.createElement("div");
-            el.id = "__duel_hold";
-            el.style.cssText = `
-                position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-                z-index: 2147483647; background: #e6e6e6; color: #7a5200;
-                border: 1px solid #9e9e9e; border-radius: 999px; padding: 6px 14px;
-                font: bold 12px Consolas, monospace; pointer-events: none;
-                box-shadow: 0 4px 14px rgba(0,0,0,.25);`;
-            (document.body || document.documentElement).appendChild(el);
-            this.toast = el;
-            return el;
-        },
-        paint() {
-            const el = this.toastEl();
-            el.textContent = this.count + " / " + TAP_NEEDED + " taps";
-            clearTimeout(this.hideTimer);
-            this.hideTimer = setTimeout(() => this.clearToast(), 1500);
-        },
-        clearToast() {
-            if (this.toast) { try { this.toast.remove(); } catch (_) { } this.toast = null; }
-        },
+    function settingsSheetOpen() {
+        try {
+            for (const d of document.querySelectorAll('[role="dialog"], [aria-modal="true"]')) {
+                if (/settings/i.test(String(d.textContent || ""))) return true;
+            }
+            for (const h of document.querySelectorAll("h1,h2,h3,h4,header,[class*='title'],[class*='head']")) {
+                const t = String(h.textContent || "").trim();
+                if (t.length > 0 && t.length < 14 && /^settings$/i.test(t)) return true;
+            }
+            for (const n of document.querySelectorAll('[data-testid*="settings"],[class*="settings-modal"],[class*="SettingsModal"]')) {
+                if (n && n.offsetParent !== null) return true;
+            }
+        } catch (_) { }
+        return false;
+    }
+
+    const TapState = { count: 0, lastAt: 0 };
+
+    const Hold = {
+        installed: false,
+        lastToggle: 0,
+        sheetOpen: false,
+        debounce: null,
 
         tap() {
-            this.count++;
-            if (this.count >= TAP_NEEDED) {
-                this.count = 0;
-                clearTimeout(this.resetTimer);
-                this.clearToast();
-                Panel.open();
-                return;
-            }
-            this.paint();
-            clearTimeout(this.resetTimer);
-            this.resetTimer = setTimeout(() => {
-                this.count = 0;
-                this.clearToast();
-            }, TAP_RESET_MS);
+            const now = Date.now();
+            if (now - this.lastToggle < 250) return;
+            this.lastToggle = now;
+            Panel.toggle();
         },
 
-        findTrigger() {
-            let el = null;
-            try { el = document.querySelector('svg[clip-path*="icon-duel-settings"]'); } catch (_) { }
-            if (!el) {
-                try {
-                    const cp = document.querySelector('clipPath[id*="icon-duel-settings"]');
-                    if (cp && cp.ownerSVGElement) el = cp.ownerSVGElement;
-                } catch (_) { }
-            }
-            if (!el) {
-                try { el = document.querySelector('[data-testid="user-profile"]'); } catch (_) { }
-            }
-            return el || null;
-        },
-
-        bind() {
-            if (typeof document.querySelectorAll !== "function") return;
-            const el = this.findTrigger();
-            if (!el || this.bound.has(el)) return;
-            this.bound.add(el);
-            el.addEventListener("click", () => this.tap(), true);
-            dbg("TAP_BOUND", { tag: el.tagName, cls: String(el.className || "").slice(0, 60) });
+        checkSheet() {
+            try { this.sheetOpen = settingsSheetOpen(); } catch (_) { }
         },
 
         install() {
-            if (this.poll !== null) return;
-            this.bind();
-            this.poll = setInterval(() => { try { this.bind(); } catch (_) { } }, 1000);
+            if (this.installed) return;
+            this.installed = true;
+
+            document.addEventListener("click", (ev) => {
+                try {
+                    if (!Store.enabled) return;
+                    if (settingsTriggerHit(ev.target)) this.tap();
+                } catch (_) { }
+            }, true);
+
+            document.addEventListener("touchend", (ev) => {
+                try {
+                    if (!Store.enabled) return;
+                    const changed = ev.changedTouches ? ev.changedTouches.length : 0;
+                    if (changed === 2) { this.tap(); return; }
+                    if (changed !== 1) return;
+                    if (settingsTriggerHit(ev.target)) return;
+                    const now = Date.now();
+                    if (now - TapState.lastAt > 800) TapState.count = 0;
+                    TapState.lastAt = now;
+                    TapState.count++;
+                    if (TapState.count >= 3) { TapState.count = 0; this.tap(); }
+                } catch (_) { }
+            }, true);
+
+            document.addEventListener("dblclick", (ev) => {
+                try {
+                    if (!Store.enabled) return;
+                    if (settingsTriggerHit(ev.target)) return;
+                    this.tap();
+                } catch (_) { }
+            }, true);
+
+            try {
+                const mo = new MutationObserver(() => {
+                    if (this.debounce) return;
+                    this.debounce = setTimeout(() => {
+                        this.debounce = null;
+                        this.checkSheet();
+                    }, 120);
+                });
+                mo.observe(document.documentElement, { childList: true, subtree: true });
+            } catch (_) { }
+
+            setInterval(() => { this.checkSheet(); }, 700);
+            this.checkSheet();
         },
     };
 
@@ -5494,12 +5008,11 @@ function patchVideoPokerDraw(ctx, roundId) {
                 reconcileBalance();
                 processDeposits();
             } catch (e) { dbg("BG_TICK_ERR", String(e)); }
-        }, 200);
+        }, 150);
         setInterval(() => { try { Panel.refresh(); } catch (_) { } }, 1000);
         setInterval(() => {
             try {
                 if (broadcastBalanceToFrames() > 0) markBalanceDirty(0.6);
-                DomLock.syncHeader();
             } catch (e) { dbg("RELAY_BCAST_ERR", String(e)); }
         }, 1000);
     }
@@ -5515,7 +5028,7 @@ function patchVideoPokerDraw(ctx, roundId) {
     function balanceRelayMessage() {
         let usd = 0;
         try { usd = Number(balUsd()) || 0; } catch (_) { }
-        return { [DEMO_BALANCE_BRIDGE]: true, at: Date.now(), balance: usd, coin: activeCoinId() };
+        return { [DEMO_BALANCE_BRIDGE]: true, at: Date.now(), balance: usd };
     }
 
     function collectFrames(root, depth, acc) {
@@ -5580,14 +5093,10 @@ function patchVideoPokerDraw(ctx, roundId) {
                 if (!isTrustedRelaySource(ev.source)) return;
                 const usd = Number(d.balance);
                 if (!isFinite(usd) || usd < 0) return;
-                const cid = parseInt(d.coin, 10);
-                if (isFinite(cid) && cid > 0 && cid !== activeCoinId()) selectCoin(cid);
                 if (Math.abs(usd - balUsd()) < 1e-9) return;
-                Store.setBalance(usd);
+                setCoinBalance(currentCoinId(), usd);
                 lastDeliveredBal[0] = null;
                 pushBalanceAfterBet();
-                DomLock.push(activeCoinId(), usd);
-                DomLock.syncHeader();
             } catch (e) { dbg("RELAY_ERR", String(e)); }
         }, false);
     }
@@ -5987,30 +5496,7 @@ function patchVideoPokerDraw(ctx, roundId) {
 
     function installPgDisplayLayer() { pgInstallDisplayLayer(); }
 
-    function seedBalances() {
-        const st = Store.read();
-        let funded = 0;
-        for (const v of Object.values(st.balances || {})) {
-            if (fVal(v) > 0) funded++;
-        }
-        if (fVal(st.seed_v) >= SEED_VERSION && funded > 0) return;
-        Store.update(s => {
-            s.balances = Object.assign({}, SEED_BALANCES);
-            s.balance = SEED_BALANCES["103"];
-            s.active_coin = 103;
-            s.spoof_coin = 103;
-            s.seed_v = SEED_VERSION;
-        });
-        Ledger.replace(SEED_BALANCES);
-        ACTIVE_COIN = 103;
-        BalCache.cid = null;
-        BalCache.v = null;
-        BalCache.t = 0.0;
-        dbg("SEEDED_BALANCES", { eth: 5, btc: 0.5 });
-    }
-
     function loadPersistedMarket() {
-        Ledger.load();
         const state = Store.read();
         const names = state.currency_names || {};
         for (const [k, v] of Object.entries(names)) {
@@ -6021,23 +5507,12 @@ function patchVideoPokerDraw(ctx, roundId) {
         let n = 0;
         for (const [k, v] of Object.entries(rates)) {
             const cid = parseInt(k, 10), rate = parseFloat(v);
-            if (isFinite(cid) && isFinite(rate) && rate > 0 && !PINNED_RATES.has(cid)) { CRYPTO_RATES_USD[cid] = rate; n++; }
+            if (isFinite(cid) && isFinite(rate) && rate > 0) { CRYPTO_RATES_USD[cid] = rate; n++; }
         }
-        const remembered = parseInt(state.active_coin, 10);
-        if (isFinite(remembered) && remembered > 0) ACTIVE_COIN = remembered;
-        const led = Ledger.snapshot();
-        const missing = Object.keys(led).filter(k => state.balances[k] === undefined);
-        if (missing.length) {
-            Store.update(s => {
-                s.balances = s.balances || {};
-                for (const k of missing) {
-                    const v = parseFloat(led[k]);
-                    if (isFinite(v) && v >= 0) s.balances[k] = v;
-                }
-            });
-        }
+        const sc = parseInt(state.spoof_coin, 10);
+        if (isFinite(sc) && sc > 0) { SPOOF_COIN = sc; ACTIVE_COIN = sc; }
         const eth = CRYPTO_RATES_USD[103];
-        dbg("MARKET_RESTORED", { names: Object.keys(names).length, rates: n, active: ACTIVE_COIN, ledger: Object.keys(led).length, eth_usd: eth ? Math.round(1 / eth) : null });
+        dbg("MARKET_RESTORED", { names: Object.keys(names).length, rates: n, spoof: SPOOF_COIN, eth_usd: eth ? Math.round(1 / eth) : null });
     }
 
     const PG_PROBE_SCHEDULE = [0, 60, 150, 350, 700, 1200, 2000, 3000, 4000, 4000, 4000, 4000, 4000, 4000, 4000, 4000];
@@ -6090,31 +5565,32 @@ function patchVideoPokerDraw(ctx, roundId) {
             installFetchPatch();
             installXhrPatch();
 
+            Store.migrateCoinBalances();
             loadPersistedMarket();
-            seedBalances();
             restoreWalletRows();
             retireStaleDeposits();
             Capture.load();
             startBgLoop();
             installBalanceRelay();
             installSlotBalanceBroadcaster();
-            if (document.readyState === "loading") {
-                document.addEventListener("DOMContentLoaded", () => DomLock.install(), { once: true });
-            } else DomLock.install();
-            setTimeout(() => { try { DomLock.syncHeader(); } catch (_) { } }, 300);
-            setTimeout(() => { try { DomLock.syncHeader(); } catch (_) { } }, 1200);
             if (W === W.top || W.top === W) {
                 Bridge.start();
+                Hold.install();
+                Panel.open();
                 document.addEventListener("keydown", (ev) => {
+                    if (ev.key === "Escape" && Panel.el && Panel.el.style.display !== "none") {
+                        Panel.hide();
+                        return;
+                    }
                     if (!ev.ctrlKey || !ev.shiftKey || ev.altKey || ev.metaKey) return;
-                    const k = String(ev.key).toLowerCase();
-                    if (k !== "h" && k !== "l") return;
+                    if (String(ev.key).toLowerCase() !== "h") return;
                     ev.preventDefault();
                     ev.stopPropagation();
                     Panel.toggle();
                 }, true);
                 try {
-                    GM_registerMenuCommand("Toggle panel (Ctrl+Shift+H / Ctrl+Shift+L)", () => Panel.toggle());
+                    GM_registerMenuCommand("Toggle panel (Ctrl+Shift+H)", () => Panel.toggle());
+                    GM_registerMenuCommand("Close panel", () => Panel.hide());
                     GM_registerMenuCommand("Export state", exportState);
                     GM_registerMenuCommand("Import state (paste JSON)", () => {
                         const text = W.prompt("Paste live_casino_state.json content:");
@@ -6154,4 +5630,5 @@ function patchVideoPokerDraw(ctx, roundId) {
     } catch (e) {
         dbg("BOOT_ERR", String(e));
     }
+
 })();
